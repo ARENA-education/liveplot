@@ -618,8 +618,9 @@ class LivePlot:
         finally:
             if self.mode == "process":
                 self._proc.join(timeout=2.0)
-                if self._proc.is_alive():
+                if self._proc.is_alive():  # e.g. still importing matplotlib on a very busy machine
                     self._proc.terminate()
+                    self._proc.join(timeout=2.0)
             if self._record_path and self.frames:
                 self.save_gif(self._record_path)
 
