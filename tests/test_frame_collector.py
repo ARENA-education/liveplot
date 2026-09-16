@@ -43,6 +43,10 @@ def test_frames_arrive_without_log_calls(fake_notebook):
 
 def test_finish_shows_final_frame_and_stops_thread(fake_notebook):
     with LivePlot("loss", refresh_seconds=1.0) as p:
+        t0 = time.monotonic()
+        while not fake_notebook.frames and time.monotonic() - t0 < 90:  # child startup
+            p.log(0, loss=1.0)
+            time.sleep(0.05)
         for step in range(5):
             p.log(step, loss=1.0 / (step + 1))
     assert fake_notebook.frames and p.last_png == fake_notebook.frames[-1][1]

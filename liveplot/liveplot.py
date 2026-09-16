@@ -292,6 +292,43 @@ def _terminate(proc, inbox):
             proc.terminate()
 
 
+def _collect_loop(plot_ref, outbox, proc, done):
+    """
+    Background thread of a LivePlot: show each frame as the renderer produces it (only the newest
+    if several queued up); stop after the renderer's final None, when the renderer is gone, or when
+    the LivePlot itself has been garbage collected.
+    """
+    try:
+        while True:
+            try:
+                item = outbox.get(timeout=0.5)
+            except queue.Empty:
+                plot = plot_ref()
+                if plot is None or plot.mode != "process" or not proc.is_alive():
+                    break
+                continue
+            if item is None:
+                break
+            while True:
+                try:
+                    newer = outbox.get_nowait()
+                except queue.Empty:
+                    break
+                if newer is None:
+                    plot = plot_ref()
+                    if plot is not None:
+                        plot._show(item)
+                    return
+                item = newer
+            plot = plot_ref()
+            if plot is None:
+                break
+            plot._show(item)
+            del plot  # don't hold the reference while blocked on the queue
+    finally:
+        done.set()
+
+
 # --------------------------------------------------------------------------- the handle
 
 
@@ -412,7 +449,12 @@ class LivePlot:
         # logs rarely (or is busy in a long step) still sees each frame when it is ready rather than
         # on its next log() call. Everything it touches is a plain attribute write or a display update.
         self._collector_done = threading.Event()
-        self._collector = threading.Thread(target=self._collect_loop, name="liveplot-frames", daemon=True)
+        # The thread gets only a weak reference to the plot: a strong one (e.g. a bound method as the
+        # target) would keep a dropped LivePlot alive forever and its render process with it.
+        self._collector = threading.Thread(
+            target=_collect_loop, args=(weakref.ref(self), self._outbox, self._proc, self._collector_done),
+            name="liveplot-frames", daemon=True,
+        )
         self._collector.start()
 
     def _make_bar(self, it, tqdm_kwargs):
@@ -595,31 +637,6 @@ class LivePlot:
         for name, (xs, ys) in self.data.items():
             self._renderer.hist[name] = (list(xs), list(ys))
         self.mode = "thread"
-
-    def _collect_loop(self):
-        """Background thread: show each frame as the renderer produces it; stop after its final None."""
-        try:
-            while True:
-                try:
-                    item = self._outbox.get(timeout=0.5)
-                except queue.Empty:
-                    if self.mode != "process" or not self._proc.is_alive():
-                        break  # renderer gone (or we fell back to in-thread rendering): nothing more will come
-                    continue
-                if item is None:
-                    break
-                while True:  # if several frames queued up, only the newest is worth showing
-                    try:
-                        newer = self._outbox.get_nowait()
-                    except queue.Empty:
-                        break
-                    if newer is None:
-                        self._show(item)
-                        return
-                    item = newer
-                self._show(item)
-        finally:
-            self._collector_done.set()
 
     def _show(self, png: bytes):
         self.last_png = png
