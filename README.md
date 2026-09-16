@@ -109,6 +109,8 @@ Per-step losses are noisy. `smooth=20` on a panel draws each of its curves as a 
 LivePlot(range(N), {"metrics": ["loss"], "smooth": 20, "yscale": "log"}, "acc")
 ```
 
+`plot.figure()` returns a matplotlib Figure of the plot as it stands, built independently of the live renderer, for `fig.savefig(...)`, a title, or any other tweak.
+
 `plot.log` accepts keywords, an explicit step (`plot.log(step, loss=...)`), or a dict (`plot.log(step, {"loss": ...})`). Values can be anything `float()` accepts, including one-element tensors. `plot.data` holds the full history as `{metric: (steps, values)}` and `plot.latest` the most recent value of each.
 
 ## Credits
