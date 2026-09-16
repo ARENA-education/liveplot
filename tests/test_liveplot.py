@@ -152,6 +152,7 @@ def test_process_mode_end_to_end(fake_notebook):
     with LivePlot("loss", {"metrics": ["acc"], "ylim": (0, 1)}, total=10_000, refresh_seconds=0.2) as p:
         assert p.mode == "process"
         wait_for_first_frame(p, fake_notebook)
+        n_warmup = len(p.data["loss"][0])  # points logged while waiting for the child
         costs, step, t_end = [], 0, time.monotonic() + 2.5  # 2.5 s of logging: several frames' worth
         while time.monotonic() < t_end:
             t0 = time.perf_counter()
@@ -163,7 +164,7 @@ def test_process_mode_end_to_end(fake_notebook):
     assert costs[len(costs) // 2] < 0.001, "median log() must stay well under a millisecond"
     assert len(fake_notebook.frames) >= 3 and all(f[:8] == PNG for f in fake_notebook.frames)
     assert not p._proc.is_alive()
-    assert len(p.data["loss"][0]) == step and p.last_png == fake_notebook.frames[-1]
+    assert len(p.data["loss"][0]) == n_warmup + step and p.last_png == fake_notebook.frames[-1]
     assert [pn["metrics"] for pn in p.panels] == [["loss"], ["acc"], ["lr"]]
 
 
@@ -244,7 +245,8 @@ def test_record_and_save_gif(tmp_path):
     assert gif.exists()
     from PIL import Image
     im = Image.open(gif)
-    assert im.is_animated and im.n_frames == len(p.frames)
+    # Pillow merges identical consecutive frames (the warm-up ones are), accumulating their durations
+    assert im.is_animated and 3 <= im.n_frames <= len(p.frames)
     q = LivePlot(progress=False)
     with pytest.raises(ValueError):
         q.save_gif(tmp_path / "empty.gif")
