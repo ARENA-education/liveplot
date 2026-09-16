@@ -139,11 +139,21 @@ def fake_notebook(monkeypatch):
     return h
 
 
+def wait_for_first_frame(p, h, timeout=90):
+    """The render child imports matplotlib at startup (~1 s idle, much more on a loaded CI box)."""
+    t0 = time.monotonic()
+    while not h.frames and time.monotonic() - t0 < timeout:
+        p.log(0, loss=1.0)
+        time.sleep(0.05)
+    assert h.frames, "render child produced no frame"
+
+
 def test_process_mode_end_to_end(fake_notebook):
     with LivePlot("loss", {"metrics": ["acc"], "ylim": (0, 1)}, total=10_000, refresh_seconds=0.2) as p:
         assert p.mode == "process"
-        costs, step, t_end = [], 0, time.monotonic() + 2.5  # ~2.5 s: enough for the child to start (~1 s)
-        while time.monotonic() < t_end:                    # and render several frames
+        wait_for_first_frame(p, fake_notebook)
+        costs, step, t_end = [], 0, time.monotonic() + 2.5  # 2.5 s of logging: several frames' worth
+        while time.monotonic() < t_end:
             t0 = time.perf_counter()
             p.log(step, loss=math.exp(-step / 100), acc=min(step / 300, 1.0), lr=1e-3)  # lr is discovered
             costs.append(time.perf_counter() - t0)
@@ -171,8 +181,7 @@ def test_interrupt_inside_with_block_is_clean(fake_notebook):
 def test_render_child_ignores_sigint(fake_notebook):
     """Jupyter's interrupt goes to the whole process group; the renderer must shrug it off."""
     p = LivePlot(refresh_seconds=0.1)
-    p.log(0, loss=1.0)
-    time.sleep(1.5)  # let the child finish starting
+    wait_for_first_frame(p, fake_notebook)
     os.kill(p._proc.pid, signal.SIGINT)
     time.sleep(0.5)
     assert p._proc.is_alive(), "render process must survive SIGINT"
@@ -185,8 +194,7 @@ def test_render_child_ignores_sigint(fake_notebook):
 
 def test_dropped_plot_does_not_leak_process(fake_notebook):
     p = LivePlot()
-    p.log(0, loss=1.0)
-    time.sleep(1.5)
+    wait_for_first_frame(p, fake_notebook)
     proc = p._proc
     assert proc.is_alive()
     del p
@@ -203,7 +211,9 @@ from liveplot import LivePlot
 class H:
     def update(self, img): pass
 LivePlot._make_display_handle = staticmethod(lambda: H())
-p = LivePlot(refresh_seconds=0.1); p.log(0, loss=1.0); time.sleep(1.5)
+p = LivePlot(refresh_seconds=0.1); p.log(0, loss=1.0)
+t0 = time.time()
+while p.last_png is None and time.time() - t0 < 90: p.log(0, loss=1.0); time.sleep(0.05)
 print(p._proc.pid, flush=True)
 os._exit(0)   # no finish(), no finalizers, no atexit: the parent just vanishes
 """
@@ -223,6 +233,10 @@ def test_record_and_save_gif(tmp_path):
     gif = tmp_path / "run.gif"
     p = LivePlot(range(60), record=str(gif), refresh_seconds=0.1, progress=False, cell_size=(3, 2), dpi=40)
     assert p.mode == "process", "record=True starts the renderer even without a display handle"
+    t0 = time.monotonic()
+    while p.last_png is None and time.monotonic() - t0 < 90:  # child startup
+        p.log(0, loss=1.0)
+        time.sleep(0.05)
     for step in p:
         p.log(loss=1.0 / (step + 1))
         time.sleep(0.03)
@@ -245,10 +259,7 @@ def test_refresh_zero_does_not_spin_when_idle(fake_notebook):
         return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
 
     p = LivePlot(refresh_seconds=0)
-    p.log(0, loss=1.0)
-    while not fake_notebook.frames:  # wait until the child has started and drawn once
-        p.log(0, loss=1.0)
-        time.sleep(0.05)
+    wait_for_first_frame(p, fake_notebook)
     time.sleep(0.3)
     before = cpu_seconds(p._proc.pid)
     time.sleep(2.0)  # idle: nothing logged

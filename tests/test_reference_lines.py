@@ -64,6 +64,10 @@ def test_process_mode_reference_lines(monkeypatch, tmp_path):
     h = _FakeHandle()
     monkeypatch.setattr(LivePlot, "_make_display_handle", staticmethod(lambda: h))
     with LivePlot({"metrics": ["loss"], "hlines": {"uniform": math.log(50257)}}, refresh_seconds=0.1) as p:
+        t0 = time.monotonic()
+        while not h.frames and time.monotonic() - t0 < 90:  # child startup
+            p.log(0, loss=11.0)
+            time.sleep(0.05)
         for step in range(40):
             p.log(step, loss=11 - step / 8)
             if step == 20:
