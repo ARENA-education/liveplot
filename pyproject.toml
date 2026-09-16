@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "liveplot"
+version = "0.1.0"
+description = "Live training curves in Jupyter, Colab and VS Code that cost the training loop (almost) nothing"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "ARENA-education" }]
+dependencies = ["matplotlib>=3.6"]
+
+[project.optional-dependencies]
+notebook = ["ipython>=8.0"]
+test = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/ARENA-education/liveplot"
+
+[tool.setuptools.packages.find]
+include = ["liveplot*"]
