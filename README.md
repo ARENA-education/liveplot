@@ -66,7 +66,7 @@ Only `matplotlib` is required. `ipython` is needed for the live display and `tqd
 
 ## How it works
 
-The training thread only appends numbers (about 40 µs per `log`). A separate render process owns the matplotlib figure, redraws it at most once per `refresh_seconds` (default 1), and sends back PNG bytes that get swapped into a fixed output cell. The output is a plain image, so it behaves identically in Jupyter, Colab, VS Code and Cursor: no widgets, no JavaScript, no CDN.
+The training thread only appends numbers (about 40 µs per `log`). A separate render process owns the matplotlib figure, redraws it at most once per `refresh_seconds` (default 1; `0` means on every arrival), and sends back PNG bytes that get swapped into a fixed output cell. The output is a plain image, so it behaves identically in Jupyter, Colab, VS Code and Cursor: no widgets, no JavaScript, no CDN.
 
 Interrupting the cell is safe. Jupyter sends its interrupt to every process the kernel started; the render process ignores it, so you get a frozen plot with `plot.data` intact. A plot that is dropped without `finish()` shuts its process down when garbage collected, and the process exits by itself if the notebook kernel dies.
 
@@ -75,7 +75,7 @@ Interrupting the cell is safe. Jupyter sends its interrupt to every process the 
 | | |
 |---|---|
 | `total`, `initial`, `unit`, `unit_scale` | tqdm's arguments, with tqdm's meaning; they define the x-axis (see above) |
-| `refresh_seconds` | redraw interval (default 1.0) |
+| `refresh_seconds` | minimum time between redraws (default 1.0). Points arriving in between are batched into the next frame. `0` redraws whenever new data arrives, as fast as rendering allows (roughly 0.15 s per frame at a few thousand points), and costs nothing while idle. |
 | `max_cols`, `rows`, `cols` | grid shape; `max_cols=None` gives a near-square grid |
 | `progress`, `desc` | disable the bundled tqdm bars, or give the single-loop form's bar a description |
 | `cell_size`, `dpi` | size of each panel in inches, and PNG resolution |

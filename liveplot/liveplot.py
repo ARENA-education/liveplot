@@ -50,8 +50,9 @@ ranges, use a dict instead of a string:
 
 How it works: the training thread only appends numbers (~40 us per `log`). A
 separate *render process* owns the matplotlib figure, redraws it at most once per
-`refresh_seconds`, and sends back PNG bytes that get swapped into a fixed output
-cell. The output is a plain image, so it behaves the same in Jupyter, Colab, VS
+`refresh_seconds` (default 1.0; points arriving in between are batched into the
+next frame; 0 means redraw on every arrival, as fast as rendering allows), and
+sends back PNG bytes that get swapped into a fixed output cell. The output is a plain image, so it behaves the same in Jupyter, Colab, VS
 Code and Cursor: no widgets, no CDN, no JavaScript. The progress bar is tqdm
 (`tqdm.auto`), shown below the plot with the latest logged values as its postfix;
 pass an existing tqdm object as the iterable to reuse yours instead.
@@ -242,11 +243,20 @@ def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_
     while running:
         if os.getppid() != parent_pid:  # notebook kernel died or restarted: nobody is listening
             return
+        now = time.monotonic()
+        if dirty and now - last_draw >= refresh_seconds:
+            outbox.put(renderer.render())  # points that arrive during this render go into the next frame
+            dirty, last_draw = False, time.monotonic()
+            continue
+        # Block until something arrives. With points pending, wake when the redraw floor is reached;
+        # otherwise sleep (checking for a dead parent every half second). refresh_seconds=0 means
+        # "redraw whenever there is new data" and must not spin while idle.
+        wait = max(refresh_seconds - (now - last_draw), 0.001) if dirty else 0.5
         try:
-            msg = inbox.get(timeout=refresh_seconds)  # wake at least once per interval
+            msg = inbox.get(timeout=wait)
         except queue.Empty:
-            msg = ()
-        pending = [msg] if msg != () else []
+            continue
+        pending = [msg]
         while True:  # drain whatever else is queued so one redraw covers many steps
             try:
                 pending.append(inbox.get_nowait())
@@ -261,10 +271,8 @@ def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_
             else:
                 renderer.add(item[1], item[2])
                 dirty = True
-        now = time.monotonic()
-        if dirty and (not running or now - last_draw >= refresh_seconds):
-            outbox.put(renderer.render())
-            dirty, last_draw = False, now
+    if dirty:
+        outbox.put(renderer.render())  # the final frame
     outbox.put(None)
 
 

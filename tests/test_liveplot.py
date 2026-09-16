@@ -234,3 +234,29 @@ def test_record_and_save_gif(tmp_path):
     q = LivePlot(progress=False)
     with pytest.raises(ValueError):
         q.save_gif(tmp_path / "empty.gif")
+
+
+@pytest.mark.skipif(not os.path.exists("/proc/self/stat"), reason="reads /proc")
+def test_refresh_zero_does_not_spin_when_idle(fake_notebook):
+    """refresh_seconds=0 means 'redraw on every arrival', not 'poll the queue in a loop'."""
+    def cpu_seconds(pid):
+        with open(f"/proc/{pid}/stat") as f:
+            fields = f.read().split(")")[-1].split()
+        return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+
+    p = LivePlot(refresh_seconds=0)
+    p.log(0, loss=1.0)
+    while not fake_notebook.frames:  # wait until the child has started and drawn once
+        p.log(0, loss=1.0)
+        time.sleep(0.05)
+    time.sleep(0.3)
+    before = cpu_seconds(p._proc.pid)
+    time.sleep(2.0)  # idle: nothing logged
+    idle = cpu_seconds(p._proc.pid) - before
+    n_before = len(fake_notebook.frames)
+    for step in range(1, 60):  # busy: frames should now come as fast as rendering allows
+        p.log(step, loss=1.0 / step)
+        time.sleep(0.01)
+    p.finish()
+    assert idle < 0.2, f"render child used {idle:.2f}s CPU while idle"
+    assert len(fake_notebook.frames) - n_before >= 2
