@@ -1,48 +1,78 @@
 """
 Live training curves that cost the training loop (almost) nothing.
 
-`LivePlot` shows a grid of matplotlib panels in the notebook output and keeps
-them updated while a training loop runs. The training thread only appends
-numbers: a separate *render process* owns the figure, redraws it at most once
-every `refresh_seconds`, and hands back PNG bytes, which the training thread
-swaps into a fixed output cell (`update_display`) in about a millisecond.
-Nothing in the loop ever waits for matplotlib, and the output is a plain
-image, so it works the same in Jupyter, Colab, VS Code and Cursor -- no
-widgets, no CDN, no JavaScript.
+    from liveplot import LivePlot
 
-    plot = LivePlot(
-        [
-            {"title": "losses", "metrics": ["loss", "actor", "critic"], "ylabel": "loss"},
-            {"title": "return / entropy", "metrics": ["return"], "secondary": ["entropy"]},
-            {"metrics": ["accuracy"], "ylim": (0, 1)},
-        ],
-        total_steps=num_steps,
-    )
-    try:
+    for step in LivePlot(range(num_steps)):          # a tqdm bar + a live plot, in one
+        loss, acc = train_step()
+        plot.log(loss=loss, acc=acc)                 # -> hmm, where does `plot` come from? see below
+
+The ways to hold on to the plot object:
+
+    plot = LivePlot(range(num_steps))                # 1. tqdm style: iterate it
+    for step in plot:
+        plot.log(loss=train_step())                  #    x is implicit: the iteration count
+
+    plot = LivePlot("loss", "acc", total=epochs * len(loader))
+    for epoch in range(epochs):                      # 2. nested loops: wrap the inner one, the
+        for imgs, labels in plot(loader, desc=f"epoch {epoch}"):   # count (and x) continues
+            plot.log(loss=train_step(imgs, labels))  #    across epochs; one tqdm bar per epoch
+        plot.log(acc=evaluate())
+    plot.finish()                                    #    (or use `with LivePlot(...) as plot:`)
+
+    with LivePlot(total=num_steps) as plot:          # 3. you own the loop and the x values
         for step in range(num_steps):
-            plot.log(step, train_step())
-    finally:
-        plot.finish()   # draw the final frame and shut the renderer down
+            plot.log(step, loss=train_step())        #    x is explicit
 
-A panel spec is a metric name (one curve on its own panel) or a dict with
-`metrics` (curves sharing the left axis, with a legend), optional `secondary`
-(curves on a right-hand axis, for quantities on a different scale) and an
-optional `title`. Per-panel presentation keys, all optional: `xlabel`
-(default "step"), `ylabel` / `ylabel2` (left / right axis labels; default is
-the metric names), `xlim` / `ylim` / `ylim2` (fixed axis ranges as `(lo, hi)`;
-an axis without one autoscales as data arrives). The grid is `max_cols` wide
-by default, or give `rows` / `cols` explicitly.
+The x-axis follows tqdm: it counts items consumed and never looks at their values.
+x = initial + n * unit_scale, where n is 0 inside the body for the first item (like
+`for step in range(N)`), `initial` shifts the start (tqdm's argument of the same
+name; use initial=1 for 1-based, initial=10 to plot range(10, 20) at its values),
+and `unit` / `unit_scale` relabel and rescale it (e.g. unit="examples",
+unit_scale=batch_size plots against examples seen, and the tqdm bar shows the same
+numbers). `total` (in items, like tqdm's) fixes the x range; the single-loop form
+takes it from len(iterable). An explicit `plot.log(step, ...)` uses that x for that
+call only, like wandb's `step=`.
 
-If the render process can't be started, rendering falls back to the calling
-thread (a warning says so). Outside a notebook there is nothing to draw on,
-so `LivePlot` just collects the metrics (`plot.data`) and starts no process.
+Metrics are discovered from what you log: with no layout given, every metric goes
+on ONE panel with a legend. To split them up, give panel strings:
+
+    LivePlot(range(N), "loss", "return | entropy", "lossD lossG | acc")
+
+Each string is one panel. Names separated by spaces share the left y-axis; a `|`
+puts the names after it on a right-hand y-axis. Metrics you log that no string
+mentions get a panel of their own. Every panel has a legend. For labels or fixed
+ranges, use a dict instead of a string:
+
+    {"metrics": ["acc"], "ylim": (0, 1), "ylabel": "test accuracy", "xlabel": "epoch"}
+
+(allowed keys: title, metrics, secondary, xlabel, ylabel, ylabel2, xlim, ylim, ylim2).
+
+How it works: the training thread only appends numbers (~40 us per `log`). A
+separate *render process* owns the matplotlib figure, redraws it at most once per
+`refresh_seconds`, and sends back PNG bytes that get swapped into a fixed output
+cell. The output is a plain image, so it behaves the same in Jupyter, Colab, VS
+Code and Cursor: no widgets, no CDN, no JavaScript. The progress bar is tqdm
+(`tqdm.auto`), shown below the plot with the latest logged values as its postfix;
+pass an existing tqdm object as the iterable to reuse yours instead.
+
+Interrupts: the render process ignores SIGINT (Jupyter's "interrupt kernel" is sent
+to the whole process group), exits by itself if the notebook process dies, and is
+terminated when the LivePlot object is garbage collected, so an interrupted cell
+leaves a frozen plot with `plot.data` intact and no stray process. Outside a
+notebook nothing is drawn; `plot.data` still collects everything.
+
+Recording: `LivePlot(..., record=True)` keeps every rendered frame in `plot.frames`
+(as PNG bytes with timestamps) and `plot.save_gif("run.gif")` stitches them into an
+animated GIF that replays at the real pace; `record="run.gif"` does that at
+`finish()`. Recording also works outside a notebook, so a script can produce the GIF.
 
 This module deliberately imports nothing heavy (no torch): the render process
-imports it afresh, so keeping it light keeps the renderer's startup ~0.1 s.
+imports it afresh, so keeping it light keeps the renderer's startup ~1 s.
 
-The per-panel label/limit options and the automatic grid-shape rule are
-borrowed from Tyler Lum's `live_plotter` (https://github.com/tylerlum/live_plotter,
-MIT License, Copyright (c) 2023 Tyler Lum) -- see THIRD_PARTY_LICENSES.md.
+The per-panel label/limit options and the automatic grid-shape rule are borrowed
+from Tyler Lum's `live_plotter` (https://github.com/tylerlum/live_plotter, MIT
+License, Copyright (c) 2023 Tyler Lum) -- see THIRD_PARTY_LICENSES.md.
 """
 
 from __future__ import annotations
@@ -50,21 +80,34 @@ from __future__ import annotations
 import io
 import math
 import multiprocessing as mp
+import os
 import queue
+import signal
 import sys
 import time
 import warnings
+import weakref
 
 _PANEL_KEYS = {"title", "metrics", "secondary", "xlabel", "ylabel", "ylabel2", "xlim", "ylim", "ylim2"}
 
 
+# --------------------------------------------------------------------------- panel specs
+
+
+def _parse_panel_string(spec: str) -> dict:
+    """'lossD lossG | acc'  ->  {"metrics": ["lossD", "lossG"], "secondary": ["acc"]}"""
+    left, _, right = spec.partition("|")
+    assert "|" not in right, f"at most one '|' per panel: {spec!r}"
+    return {"metrics": left.split(), "secondary": right.split()}
+
+
 def _normalise_panel(spec) -> dict:
     if isinstance(spec, str):
-        spec = {"title": spec, "metrics": [spec]}
+        spec = _parse_panel_string(spec)
     unknown = set(spec) - _PANEL_KEYS
     assert not unknown, f"unknown panel keys {sorted(unknown)}; allowed: {sorted(_PANEL_KEYS)}"
     metrics, secondary = list(spec.get("metrics", [])), list(spec.get("secondary", []))
-    assert metrics or secondary, "a panel needs at least one metric"
+    assert metrics or secondary, f"a panel needs at least one metric: {spec!r}"
     for lim in ("xlim", "ylim", "ylim2"):
         if spec.get(lim) is not None:
             assert len(spec[lim]) == 2, f"{lim} must be a (low, high) pair"
@@ -72,7 +115,7 @@ def _normalise_panel(spec) -> dict:
         "title": spec.get("title") or " / ".join(metrics + secondary),
         "metrics": metrics,
         "secondary": secondary,
-        "xlabel": spec.get("xlabel", "step"),
+        "xlabel": spec.get("xlabel"),  # None -> the plot-wide unit ("step" by default)
         "ylabel": spec.get("ylabel"),
         "ylabel2": spec.get("ylabel2"),
         "xlim": spec.get("xlim"),
@@ -109,22 +152,29 @@ class _FigureRenderer:
     """
     Owns one matplotlib figure and the metric history it draws. Built on the
     object-oriented API (no pyplot), so it has no global state and works the
-    same inside the render process or on the calling thread.
+    same inside the render process or on the calling thread. `set_layout`
+    rebuilds the figure for a new panel list, keeping the history.
     """
 
-    def __init__(self, panels, total_steps, grid, cell_size, dpi):
+    def __init__(self, panels, xlim, layout, hist=None):
+        self.xlim, self.layout = xlim, layout  # xlim = default x range or None; layout = (max_cols, rows, cols, cell_size, dpi, xlabel)
+        self.hist = hist if hist is not None else {}
+        self.set_layout(panels)
+
+    def set_layout(self, panels):
         import matplotlib
         from matplotlib.backends.backend_agg import FigureCanvasAgg
         from matplotlib.figure import Figure
 
+        max_cols, rows_opt, cols_opt, cell_size, dpi, xlabel = self.layout
         n = len(panels)
-        rows, cols = grid
+        rows, cols = _grid_shape(n, max_cols, rows_opt, cols_opt)
         self.fig = Figure(figsize=(cell_size[0] * cols, cell_size[1] * rows))
         FigureCanvasAgg(self.fig)
+        self.dpi = dpi
         axes = self.fig.subplots(rows, cols, squeeze=False).flatten()
         palette = matplotlib.rcParams["axes.prop_cycle"].by_key()["color"]
-        self.dpi = dpi
-        self.lines, self.hist = {}, {}
+        self.lines = {}
         self.fixed = {}  # axes -> (x fixed?, y fixed?): fixed axes are never autoscaled
         for ax, panel in zip(axes, panels):
             names = panel["metrics"] + panel["secondary"]
@@ -133,18 +183,19 @@ class _FigureRenderer:
             for j, name in enumerate(names):
                 target = ax2 if name in panel["secondary"] else ax
                 (line,) = target.plot([], [], lw=1.2, color=palette[j % len(palette)], label=name)
-                self.lines[name], self.hist[name] = line, ([], [])
+                self.lines[name] = line
+                self.hist.setdefault(name, ([], []))
                 handles.append(line)
             ax.set_title(panel["title"])
-            ax.set_xlabel(panel["xlabel"])
-            xlim = panel["xlim"] or ((0, total_steps) if total_steps else None)
+            ax.set_xlabel(panel["xlabel"] or xlabel)
+            xlim = panel["xlim"] or self.xlim
             if xlim:
                 ax.set_xlim(*xlim)
             if panel["ylim"]:
                 ax.set_ylim(*panel["ylim"])
             self.fixed[ax] = (xlim is not None, panel["ylim"] is not None)
-            if len(names) > 1:
-                ax.legend(handles, names, loc="best", fontsize=8)
+            if names != ["_"]:  # (the "waiting for data" placeholder has no legend)
+                ax.legend(handles, names, loc="best", fontsize=8)  # every panel gets a legend
             if ax2 is not None:
                 ax.set_ylabel(panel["ylabel"] or ", ".join(panel["metrics"]))
                 ax2.set_ylabel(panel["ylabel2"] or ", ".join(panel["secondary"]))
@@ -157,15 +208,15 @@ class _FigureRenderer:
             ax.set_visible(False)
         self.fig.tight_layout()
 
-    def add(self, step: int, metrics: dict):
+    def add(self, step, metrics: dict):
         for name, value in metrics.items():
-            if name in self.hist:
-                self.hist[name][0].append(step)
-                self.hist[name][1].append(float(value))
+            xs, ys = self.hist.setdefault(name, ([], []))
+            xs.append(step)
+            ys.append(float(value))
 
     def render(self) -> bytes:
-        for name, (xs, ys) in self.hist.items():
-            self.lines[name].set_data(xs, ys)
+        for name, line in self.lines.items():
+            line.set_data(*self.hist[name])
         for line in self.lines.values():
             fixed_x, fixed_y = self.fixed[line.axes]
             line.axes.relim()
@@ -178,15 +229,19 @@ class _FigureRenderer:
 # --------------------------------------------------------------------------- the render process
 
 
-def _render_worker(panels, inbox, outbox, refresh_seconds, grid, cell_size, dpi, total_steps):
+def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_pid):
     """
-    Loop: collect (step, metrics) messages from `inbox`, redraw at most once per
-    `refresh_seconds` while there is new data, put PNG bytes on `outbox`. A
-    `None` message means finish: draw one last frame, put `None`, exit.
+    Loop: collect messages from `inbox`, redraw at most once per `refresh_seconds`
+    while there is new data, put PNG bytes on `outbox`. Messages: ("data", step,
+    metrics); ("layout", panels) to rebuild the figure; None to finish (draw one
+    last frame, put None, exit). Exits on its own if the parent process is gone.
     """
-    renderer = _FigureRenderer(panels, total_steps, grid, cell_size, dpi)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)  # Jupyter interrupts the whole process group; not our business
+    renderer = _FigureRenderer(panels, xlim, layout)
     dirty, last_draw, running = False, 0.0, True
     while running:
+        if os.getppid() != parent_pid:  # notebook kernel died or restarted: nobody is listening
+            return
         try:
             msg = inbox.get(timeout=refresh_seconds)  # wake at least once per interval
         except queue.Empty:
@@ -200,8 +255,11 @@ def _render_worker(panels, inbox, outbox, refresh_seconds, grid, cell_size, dpi,
         for item in pending:
             if item is None:
                 running = False
+            elif item[0] == "layout":
+                renderer.set_layout(item[1])
+                dirty = True
             else:
-                renderer.add(*item)
+                renderer.add(item[1], item[2])
                 dirty = True
         now = time.monotonic()
         if dirty and (not running or now - last_draw >= refresh_seconds):
@@ -210,36 +268,84 @@ def _render_worker(panels, inbox, outbox, refresh_seconds, grid, cell_size, dpi,
     outbox.put(None)
 
 
+def _terminate(proc, inbox):
+    """Finalizer: shut the render process down without blocking (used when a LivePlot is dropped)."""
+    if proc is not None and proc.is_alive():
+        try:
+            inbox.put_nowait(None)
+        except Exception:  # noqa: BLE001
+            pass
+        proc.join(timeout=0.5)
+        if proc.is_alive():
+            proc.terminate()
+
+
 # --------------------------------------------------------------------------- the handle
 
 
 class LivePlot:
     def __init__(
         self,
-        panels: list,
-        total_steps: int | None = None,
+        *args,
+        total: int | None = None,
+        initial: int | float = 0,
+        unit: str = "step",
+        unit_scale: int | float = 1,
         refresh_seconds: float = 1.0,
         max_cols: int | None = 3,
         rows: int | None = None,
         cols: int | None = None,
         cell_size: tuple = (5, 3.5),
         dpi: int = 100,
+        progress: bool = True,
+        desc: str | None = None,
+        record: bool | str = False,
     ):
-        self.panels = [_normalise_panel(p) for p in panels]
-        self.grid = _grid_shape(len(self.panels), max_cols, rows, cols)
-        self.metric_names = [n for p in self.panels for n in p["metrics"] + p["secondary"]]
-        self.data = {n: ([], []) for n in self.metric_names}  # full history, kept on this side too
+        """
+        LivePlot([iterable,] *panels, total=None, initial=0, unit="step", unit_scale=1, ...)
+
+        iterable: anything to loop over (a range, a DataLoader, an existing tqdm bar). Iterating
+            the LivePlot yields its items, shows a tqdm bar (unless progress=False or it already is
+            one) and finishes the plot when the loop ends, however it ends. For nested loops, leave
+            it out and wrap the inner loop with `plot(iterable, **tqdm_kwargs)` instead.
+        panels: layout strings like "loss", "return | entropy", "lossD lossG | acc", or dicts (see
+            module docstring). With none, every logged metric shares one panel.
+        total, initial, unit, unit_scale: tqdm's arguments, with tqdm's meaning; they define the
+            x-axis (see module docstring).
+        """
+        iterable, specs = (args[0], args[1:]) if args and not isinstance(args[0], (str, dict)) else (None, args)
+        self.panels = [_normalise_panel(p) for p in specs]
+        self._explicit_layout = bool(self.panels)
+        self._placed = {n for p in self.panels for n in p["metrics"] + p["secondary"]}
+        self._layout = (max_cols, rows, cols, cell_size, dpi, unit)
+        self._iterable, self._bar, self._desc, self._progress = iterable, None, desc, progress
+        if total is None and iterable is not None:
+            try:
+                total = len(iterable)
+            except TypeError:
+                pass
+        self.total, self.initial, self.unit, self.unit_scale = total, initial, unit, unit_scale
         self.refresh_seconds = refresh_seconds
+        self.data: dict[str, tuple[list, list]] = {}  # metric -> (x values, values); full history, this side
+        self.latest: dict[str, float] = {}  # most recent value of each metric (what the tqdm postfix shows)
         self.last_png: bytes | None = None
-        self._handle = self._make_display_handle()
+        self.n = 0  # items consumed so far across every wrapped loop (tqdm's `n`)
+        self._wrapping = False  # has any loop been wrapped? (then x comes from the counter)
+        self._last_x = initial  # x of the last explicit `log(step, ...)`; used when nothing is wrapped
+        self._record = bool(record)
+        self._record_path = record if isinstance(record, str) else None
+        self.frames: list[tuple[float, bytes]] = []  # (time, png) of every frame shown, if record=True
+        self._t0 = time.monotonic()
         self._done = False
-        self._proc = self._renderer = None
-        self._last_draw = 0.0
-        if self._handle is None:
+        self._proc = self._renderer = self._inbox = self._outbox = None
+        self._last_draw = self._last_postfix = 0.0
+        self._n_logs = 0
+        self._handle = self._make_display_handle()
+        if self._handle is None and not self._record:
             self.mode = "off"  # not in a notebook: nothing to draw on, just collect metrics
             return
         try:
-            self._start_process(total_steps, cell_size, dpi)
+            self._start_process()
             self.mode = "process"
         except Exception as e:  # noqa: BLE001 - whatever stops the process, keep the plot working
             warnings.warn(
@@ -247,7 +353,7 @@ class LivePlot:
                 f"rendering on the training thread instead (~0.15 s per redraw).",
                 stacklevel=2,
             )
-            self._renderer = _FigureRenderer(self.panels, total_steps, self.grid, cell_size, dpi)
+            self._renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout)
             self.mode = "thread"
 
     # -- setup -------------------------------------------------------------------
@@ -263,14 +369,18 @@ class LivePlot:
             return None
         return display(HTML("<i>live plot: waiting for the first frame…</i>"), display_id=True)
 
-    def _start_process(self, total_steps, cell_size, dpi):
+    def _panels_or_placeholder(self):
+        return self.panels or [_normalise_panel({"title": "waiting for data…", "metrics": ["_"]})]
+
+    def _start_process(self):
         # "spawn", never "fork": the notebook process has usually initialised CUDA,
         # and a forked child inherits a CUDA context it must not touch.
         ctx = mp.get_context("spawn")
         self._inbox, self._outbox = ctx.Queue(), ctx.Queue()
         self._proc = ctx.Process(
             target=_render_worker,
-            args=(self.panels, self._inbox, self._outbox, self.refresh_seconds, self.grid, cell_size, dpi, total_steps),
+            args=(self._panels_or_placeholder(), self._inbox, self._outbox, self.refresh_seconds, self._layout,
+                  self.x_range, os.getpid()),
             daemon=True,
         )
         # A spawned child re-runs the parent's __main__ *file* if there is one. In a
@@ -285,22 +395,131 @@ class LivePlot:
         finally:
             if main is not None:
                 main.__dict__.update(hidden)
+        weakref.finalize(self, _terminate, self._proc, self._inbox)  # dropped without finish() -> no leak
+
+    def _make_bar(self, it, tqdm_kwargs):
+        if not self._progress:
+            return None
+        try:
+            from tqdm import tqdm as tqdm_base  # every tqdm flavour (notebook, asyncio, rich) subclasses this
+            from tqdm.auto import tqdm
+        except ImportError:
+            return None
+        if isinstance(it, tqdm_base):
+            return it  # the caller's own bar: reuse it (and never close it)
+        kwargs = {"unit": self.unit}
+        if self.unit_scale != 1:
+            kwargs["unit_scale"] = self.unit_scale  # the bar shows the same numbers as the x-axis
+        if "total" not in tqdm_kwargs:
+            try:
+                kwargs["total"] = len(it)
+            except TypeError:
+                pass
+        # No iterable is given to tqdm: we drive it with update() ourselves, so that the closing
+        # line of the bar still shows the final postfix (tqdm closes a wrapped iterable before we
+        # could write it).
+        return tqdm(**kwargs, **tqdm_kwargs)
 
     # -- use ----------------------------------------------------------------------
 
-    def log(self, step: int, metrics: dict):
-        """Record one step's metrics. Unknown metric names are ignored."""
-        picked = {k: float(v) for k, v in metrics.items() if k in self.data}
+    @property
+    def x_range(self):
+        """Default x-axis range (initial, initial + total * unit_scale), or None to autoscale."""
+        return (self.initial, self.initial + self.total * self.unit_scale) if self.total else None
+
+    @property
+    def step(self):
+        """The x value a `log()` call gets right now."""
+        return self.initial + self.n * self.unit_scale if self._wrapping else self._last_x
+
+    def __call__(self, iterable, **tqdm_kwargs):
+        """
+        Wrap a loop: `for batch in plot(loader, desc="epoch 3"):`. Shows a tqdm bar (kwargs go to
+        tqdm) and advances the item count that drives the x-axis. Wrap as many loops as you like
+        on one plot; the count continues across them. Does not finish the plot when the loop ends.
+        """
+        self._wrapping = True
+        bar = self._make_bar(iterable, tqdm_kwargs)
+        self._bar = bar
+        ours = bar is not None and bar is not iterable
+        try:
+            for item in (iterable if ours or bar is None else bar):
+                yield item
+                self.n += 1
+                if ours:
+                    bar.update(1)
+        finally:
+            if bar is not None:
+                bar.set_postfix(self.latest, refresh=False)
+                if ours:
+                    bar.close()
+
+    def __iter__(self):
+        if self._iterable is None:
+            raise TypeError("nothing to iterate: use LivePlot(iterable, ...), or plot(iterable) inside your loop")
+        try:
+            kwargs = {"desc": self._desc} if self._desc else {}
+            yield from self(self._iterable, **kwargs)
+        finally:
+            self.finish()
+
+    def log(self, *args, **metrics):
+        """
+        log(loss=0.3, acc=0.9)            step = the current loop step
+        log(step, loss=0.3)               explicit step
+        log(step, {"loss": 0.3})          dict form
+        Any value convertible to float works (tensors with one element included).
+        """
+        step = self.step
+        if args:
+            if isinstance(args[0], dict):
+                metrics = {**args[0], **metrics}
+            else:
+                step = self._last_x = args[0]  # explicit x for this call (and the default until iteration)
+                if len(args) > 1:
+                    metrics = {**args[1], **metrics}
+        picked = {k: float(v) for k, v in metrics.items()}
+        new = [k for k in picked if k not in self.data]
         for name, value in picked.items():
+            self.data.setdefault(name, ([], []))
             self.data[name][0].append(step)
             self.data[name][1].append(value)
+        self.latest.update(picked)
+        if new:
+            self._extend_layout(new)
         if self.mode == "process":
-            self._inbox.put((step, picked))
-            self._collect(block=False)
-        elif self.mode == "thread":
+            self._inbox.put(("data", step, picked))
+            self._n_logs += 1
+            if self._n_logs % 100 == 0 and not self._proc.is_alive():
+                self._fall_back_to_thread("the render process died")
+            else:
+                self._collect(block=False)
+        if self.mode == "thread":
             self._renderer.add(step, picked)
             if time.monotonic() - self._last_draw >= self.refresh_seconds:
                 self._show(self._renderer.render())
+        if self._bar is not None and time.monotonic() - self._last_postfix > 0.1:
+            self._bar.set_postfix(self.latest, refresh=False)
+            self._last_postfix = time.monotonic()
+
+    def _extend_layout(self, new_metrics):
+        """Metrics no panel mentions: all on one shared panel if no layout was given, else one panel each."""
+        unplaced = [m for m in new_metrics if m not in self._placed]
+        if not unplaced:
+            return
+        if self._explicit_layout:
+            for m in unplaced:
+                self.panels.append(_normalise_panel({"metrics": [m]}))
+        elif not self.panels:
+            self.panels.append(_normalise_panel({"metrics": unplaced}))
+        else:
+            self.panels[0]["metrics"].extend(unplaced)
+            self.panels[0]["title"] = " / ".join(self.panels[0]["metrics"])
+        self._placed.update(unplaced)
+        if self.mode == "process":
+            self._inbox.put(("layout", self.panels))
+        elif self.mode == "thread":
+            self._renderer.set_layout(self.panels)
 
     def refresh(self):
         """Force a redraw now (thread mode only; the render process paces itself)."""
@@ -308,17 +527,43 @@ class LivePlot:
             self._show(self._renderer.render())
 
     def finish(self):
-        """Draw the final frame and shut the renderer down. Safe to call twice."""
+        """Draw the final frame and shut the renderer down. Safe to call twice, and to interrupt."""
         if self._done:
             return
         self._done = True
-        if self.mode == "process":
-            if self._proc.is_alive():
-                self._inbox.put(None)
-                self._collect(block=True)
-            self._proc.join(timeout=5)
-        elif self.mode == "thread":
-            self._show(self._renderer.render())
+        try:
+            if self.mode == "process":
+                if self._proc.is_alive():
+                    self._inbox.put(None)
+                    self._collect(block=True, timeout=5.0)
+            elif self.mode == "thread":
+                self._show(self._renderer.render())
+        finally:
+            if self.mode == "process":
+                self._proc.join(timeout=2.0)
+                if self._proc.is_alive():
+                    self._proc.terminate()
+            if self._record_path and self.frames:
+                self.save_gif(self._record_path)
+
+    def save_gif(self, path, speedup: float = 1.0, max_frame_ms: int = 1000, hold_last_ms: int = 1500, colors: int = 64):
+        """
+        Write the recorded frames (needs `record=True`) as an animated GIF that replays at the real
+        pace of the run divided by `speedup`, with no single frame shown longer than `max_frame_ms`.
+        Returns the path. Uses Pillow (installed with matplotlib).
+        """
+        import io
+
+        from PIL import Image
+
+        if not self.frames:
+            raise ValueError("nothing recorded: create the plot with record=True")
+        images = [Image.open(io.BytesIO(png)).convert("P", palette=Image.ADAPTIVE, colors=colors) for _, png in self.frames]
+        times = [t for t, _ in self.frames]
+        durations = [min(int(1000 * (b - a) / speedup), max_frame_ms) for a, b in zip(times, times[1:])] + [hold_last_ms]
+        durations = [max(d, 20) for d in durations]  # GIF viewers ignore very short delays
+        images[0].save(path, save_all=True, append_images=images[1:], duration=durations, loop=0, optimize=True)
+        return path
 
     def __enter__(self):
         return self
@@ -327,6 +572,13 @@ class LivePlot:
         self.finish()
 
     # -- plumbing -----------------------------------------------------------------
+
+    def _fall_back_to_thread(self, why):
+        warnings.warn(f"LivePlot: {why}; rendering on the training thread from now on.", stacklevel=3)
+        self._renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout)
+        for name, (xs, ys) in self.data.items():
+            self._renderer.hist[name] = (list(xs), list(ys))
+        self.mode = "thread"
 
     def _collect(self, block: bool, timeout: float = 15.0):
         """Take the newest frame off the outbox (if any) and display it."""
@@ -337,7 +589,6 @@ class LivePlot:
             except queue.Empty:
                 break
             if item is None:  # renderer has sent its final frame
-                block = False
                 break
             png = item
             if not block:
@@ -350,6 +601,8 @@ class LivePlot:
     def _show(self, png: bytes):
         self.last_png = png
         self._last_draw = time.monotonic()
+        if self._record:
+            self.frames.append((time.monotonic() - self._t0, png))
         if self._handle is not None:
             from IPython.display import Image
 
