@@ -171,12 +171,14 @@ def test_process_mode_end_to_end(fake_notebook):
 def test_interrupt_inside_with_block_is_clean(fake_notebook):
     with pytest.raises(KeyboardInterrupt):
         with LivePlot(refresh_seconds=0.2) as p:
+            wait_for_first_frame(p, fake_notebook)
+            n_warmup = len(p.data["loss"][0])
             for step in range(50):
                 p.log(step, loss=1.0 / (step + 1))
                 if step == 30:
                     raise KeyboardInterrupt
     assert not p._proc.is_alive()
-    assert len(p.data["loss"][0]) == 31 and fake_notebook.frames, "final frame drawn, data kept"
+    assert len(p.data["loss"][0]) == n_warmup + 31 and fake_notebook.frames, "final frame drawn, data kept"
 
 
 def test_render_child_ignores_sigint(fake_notebook):
