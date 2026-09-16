@@ -12,8 +12,9 @@ widgets, no CDN, no JavaScript.
 
     plot = LivePlot(
         [
-            {"title": "losses", "metrics": ["loss", "actor", "critic"]},
+            {"title": "losses", "metrics": ["loss", "actor", "critic"], "ylabel": "loss"},
             {"title": "return / entropy", "metrics": ["return"], "secondary": ["entropy"]},
+            {"metrics": ["accuracy"], "ylim": (0, 1)},
         ],
         total_steps=num_steps,
     )
@@ -26,7 +27,11 @@ widgets, no CDN, no JavaScript.
 A panel spec is a metric name (one curve on its own panel) or a dict with
 `metrics` (curves sharing the left axis, with a legend), optional `secondary`
 (curves on a right-hand axis, for quantities on a different scale) and an
-optional `title`. Every axis autoscales as data arrives.
+optional `title`. Per-panel presentation keys, all optional: `xlabel`
+(default "step"), `ylabel` / `ylabel2` (left / right axis labels; default is
+the metric names), `xlim` / `ylim` / `ylim2` (fixed axis ranges as `(lo, hi)`;
+an axis without one autoscales as data arrives). The grid is `max_cols` wide
+by default, or give `rows` / `cols` explicitly.
 
 If the render process can't be started, rendering falls back to the calling
 thread (a warning says so). Outside a notebook there is nothing to draw on,
@@ -34,6 +39,10 @@ so `LivePlot` just collects the metrics (`plot.data`) and starts no process.
 
 This module deliberately imports nothing heavy (no torch): the render process
 imports it afresh, so keeping it light keeps the renderer's startup ~0.1 s.
+
+The per-panel label/limit options and the automatic grid-shape rule are
+borrowed from Tyler Lum's `live_plotter` (https://github.com/tylerlum/live_plotter,
+MIT License, Copyright (c) 2023 Tyler Lum) -- see THIRD_PARTY_LICENSES.md.
 """
 
 from __future__ import annotations
@@ -46,14 +55,51 @@ import sys
 import time
 import warnings
 
+_PANEL_KEYS = {"title", "metrics", "secondary", "xlabel", "ylabel", "ylabel2", "xlim", "ylim", "ylim2"}
+
 
 def _normalise_panel(spec) -> dict:
     if isinstance(spec, str):
-        return {"title": spec, "metrics": [spec], "secondary": []}
+        spec = {"title": spec, "metrics": [spec]}
+    unknown = set(spec) - _PANEL_KEYS
+    assert not unknown, f"unknown panel keys {sorted(unknown)}; allowed: {sorted(_PANEL_KEYS)}"
     metrics, secondary = list(spec.get("metrics", [])), list(spec.get("secondary", []))
     assert metrics or secondary, "a panel needs at least one metric"
-    title = spec.get("title") or " / ".join(metrics + secondary)
-    return {"title": title, "metrics": metrics, "secondary": secondary}
+    for lim in ("xlim", "ylim", "ylim2"):
+        if spec.get(lim) is not None:
+            assert len(spec[lim]) == 2, f"{lim} must be a (low, high) pair"
+    return {
+        "title": spec.get("title") or " / ".join(metrics + secondary),
+        "metrics": metrics,
+        "secondary": secondary,
+        "xlabel": spec.get("xlabel", "step"),
+        "ylabel": spec.get("ylabel"),
+        "ylabel2": spec.get("ylabel2"),
+        "xlim": spec.get("xlim"),
+        "ylim": spec.get("ylim"),
+        "ylim2": spec.get("ylim2"),
+    }
+
+
+def _grid_shape(n_panels: int, max_cols: int | None, rows: int | None, cols: int | None) -> tuple[int, int]:
+    """
+    Rows x cols for `n_panels` panels. Explicit `rows` / `cols` win; otherwise the grid is at
+    most `max_cols` wide; with neither, use the near-square rule from live_plotter's
+    `compute_n_rows_n_cols` (rows = ceil(sqrt(n)), cols = ceil(n / rows)).
+    """
+    assert n_panels > 0
+    if rows is not None and cols is not None:
+        assert rows * cols >= n_panels, f"{rows}x{cols} grid can't hold {n_panels} panels"
+        return rows, cols
+    if rows is not None:
+        return rows, math.ceil(n_panels / rows)
+    if cols is not None:
+        return math.ceil(n_panels / cols), cols
+    if max_cols is not None:
+        cols = min(max_cols, n_panels)
+        return math.ceil(n_panels / cols), cols
+    rows = math.ceil(math.sqrt(n_panels))
+    return rows, math.ceil(n_panels / rows)
 
 
 # --------------------------------------------------------------------------- the figure
@@ -66,20 +112,20 @@ class _FigureRenderer:
     same inside the render process or on the calling thread.
     """
 
-    def __init__(self, panels, total_steps, max_cols, cell_size, dpi):
+    def __init__(self, panels, total_steps, grid, cell_size, dpi):
         import matplotlib
         from matplotlib.backends.backend_agg import FigureCanvasAgg
         from matplotlib.figure import Figure
 
         n = len(panels)
-        cols, rows = min(max_cols, n), math.ceil(n / max_cols)
+        rows, cols = grid
         self.fig = Figure(figsize=(cell_size[0] * cols, cell_size[1] * rows))
         FigureCanvasAgg(self.fig)
         axes = self.fig.subplots(rows, cols, squeeze=False).flatten()
         palette = matplotlib.rcParams["axes.prop_cycle"].by_key()["color"]
         self.dpi = dpi
-        self.fixed_x = bool(total_steps)
         self.lines, self.hist = {}, {}
+        self.fixed = {}  # axes -> (x fixed?, y fixed?): fixed axes are never autoscaled
         for ax, panel in zip(axes, panels):
             names = panel["metrics"] + panel["secondary"]
             ax2 = ax.twinx() if panel["secondary"] else None
@@ -90,14 +136,23 @@ class _FigureRenderer:
                 self.lines[name], self.hist[name] = line, ([], [])
                 handles.append(line)
             ax.set_title(panel["title"])
-            ax.set_xlabel("step")
-            if total_steps:
-                ax.set_xlim(0, total_steps)
+            ax.set_xlabel(panel["xlabel"])
+            xlim = panel["xlim"] or ((0, total_steps) if total_steps else None)
+            if xlim:
+                ax.set_xlim(*xlim)
+            if panel["ylim"]:
+                ax.set_ylim(*panel["ylim"])
+            self.fixed[ax] = (xlim is not None, panel["ylim"] is not None)
             if len(names) > 1:
                 ax.legend(handles, names, loc="best", fontsize=8)
             if ax2 is not None:
-                ax.set_ylabel(", ".join(panel["metrics"]))
-                ax2.set_ylabel(", ".join(panel["secondary"]))
+                ax.set_ylabel(panel["ylabel"] or ", ".join(panel["metrics"]))
+                ax2.set_ylabel(panel["ylabel2"] or ", ".join(panel["secondary"]))
+                if panel["ylim2"]:
+                    ax2.set_ylim(*panel["ylim2"])
+                self.fixed[ax2] = (xlim is not None, panel["ylim2"] is not None)
+            elif panel["ylabel"]:
+                ax.set_ylabel(panel["ylabel"])
         for ax in axes[n:]:
             ax.set_visible(False)
         self.fig.tight_layout()
@@ -112,8 +167,9 @@ class _FigureRenderer:
         for name, (xs, ys) in self.hist.items():
             self.lines[name].set_data(xs, ys)
         for line in self.lines.values():
+            fixed_x, fixed_y = self.fixed[line.axes]
             line.axes.relim()
-            line.axes.autoscale_view(scalex=not self.fixed_x)
+            line.axes.autoscale_view(scalex=not fixed_x, scaley=not fixed_y)
         buf = io.BytesIO()
         self.fig.savefig(buf, format="png", dpi=self.dpi)
         return buf.getvalue()
@@ -122,13 +178,13 @@ class _FigureRenderer:
 # --------------------------------------------------------------------------- the render process
 
 
-def _render_worker(panels, inbox, outbox, refresh_seconds, max_cols, cell_size, dpi, total_steps):
+def _render_worker(panels, inbox, outbox, refresh_seconds, grid, cell_size, dpi, total_steps):
     """
     Loop: collect (step, metrics) messages from `inbox`, redraw at most once per
     `refresh_seconds` while there is new data, put PNG bytes on `outbox`. A
     `None` message means finish: draw one last frame, put `None`, exit.
     """
-    renderer = _FigureRenderer(panels, total_steps, max_cols, cell_size, dpi)
+    renderer = _FigureRenderer(panels, total_steps, grid, cell_size, dpi)
     dirty, last_draw, running = False, 0.0, True
     while running:
         try:
@@ -163,11 +219,14 @@ class LivePlot:
         panels: list,
         total_steps: int | None = None,
         refresh_seconds: float = 1.0,
-        max_cols: int = 3,
+        max_cols: int | None = 3,
+        rows: int | None = None,
+        cols: int | None = None,
         cell_size: tuple = (5, 3.5),
         dpi: int = 100,
     ):
         self.panels = [_normalise_panel(p) for p in panels]
+        self.grid = _grid_shape(len(self.panels), max_cols, rows, cols)
         self.metric_names = [n for p in self.panels for n in p["metrics"] + p["secondary"]]
         self.data = {n: ([], []) for n in self.metric_names}  # full history, kept on this side too
         self.refresh_seconds = refresh_seconds
@@ -180,7 +239,7 @@ class LivePlot:
             self.mode = "off"  # not in a notebook: nothing to draw on, just collect metrics
             return
         try:
-            self._start_process(total_steps, max_cols, cell_size, dpi)
+            self._start_process(total_steps, cell_size, dpi)
             self.mode = "process"
         except Exception as e:  # noqa: BLE001 - whatever stops the process, keep the plot working
             warnings.warn(
@@ -188,7 +247,7 @@ class LivePlot:
                 f"rendering on the training thread instead (~0.15 s per redraw).",
                 stacklevel=2,
             )
-            self._renderer = _FigureRenderer(self.panels, total_steps, max_cols, cell_size, dpi)
+            self._renderer = _FigureRenderer(self.panels, total_steps, self.grid, cell_size, dpi)
             self.mode = "thread"
 
     # -- setup -------------------------------------------------------------------
@@ -204,14 +263,14 @@ class LivePlot:
             return None
         return display(HTML("<i>live plot: waiting for the first frame…</i>"), display_id=True)
 
-    def _start_process(self, total_steps, max_cols, cell_size, dpi):
+    def _start_process(self, total_steps, cell_size, dpi):
         # "spawn", never "fork": the notebook process has usually initialised CUDA,
         # and a forked child inherits a CUDA context it must not touch.
         ctx = mp.get_context("spawn")
         self._inbox, self._outbox = ctx.Queue(), ctx.Queue()
         self._proc = ctx.Process(
             target=_render_worker,
-            args=(self.panels, self._inbox, self._outbox, self.refresh_seconds, max_cols, cell_size, dpi, total_steps),
+            args=(self.panels, self._inbox, self._outbox, self.refresh_seconds, self.grid, cell_size, dpi, total_steps),
             daemon=True,
         )
         # A spawned child re-runs the parent's __main__ *file* if there is one. In a
