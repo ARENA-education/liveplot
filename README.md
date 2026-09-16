@@ -87,7 +87,7 @@ For labels or fixed ranges, use a dict instead of a string for that panel:
 {"metrics": ["acc"], "ylim": (0, 1), "ylabel": "test accuracy", "xlabel": "epoch"}
 ```
 
-Allowed keys: `title`, `metrics`, `secondary`, `xlabel`, `ylabel`, `ylabel2`, `xlim`, `ylim`, `ylim2`, `hlines`, `hlines2`.
+Allowed keys: `title`, `metrics`, `secondary`, `xlabel`, `ylabel`, `ylabel2`, `xlim`, `ylim`, `ylim2`, `hlines`, `hlines2`, `smooth`, `yscale`, `yscale2`.
 
 ## Reference lines
 
@@ -100,6 +100,14 @@ plot.mark("lr drop")                            # a dotted vertical line on ever
 ```
 
 `hlines` takes `{label: y}` or a list of values; `hlines2` is the same for the right-hand axis.
+
+## Smoothing and log axes
+
+Per-step losses are noisy. `smooth=20` on a panel draws each of its curves as a rolling mean over the last 20 points, with the raw values faded behind it; `LivePlot(..., smooth=20)` makes that the default for every panel, and `"smooth": 0` on a panel opts out. `yscale="log"` (and `yscale2` for the right axis) gives a log axis.
+
+```python
+LivePlot(range(N), {"metrics": ["loss"], "smooth": 20, "yscale": "log"}, "acc")
+```
 
 `plot.log` accepts keywords, an explicit step (`plot.log(step, loss=...)`), or a dict (`plot.log(step, {"loss": ...})`). Values can be anything `float()` accepts, including one-element tensors. `plot.data` holds the full history as `{metric: (steps, values)}` and `plot.latest` the most recent value of each.
 

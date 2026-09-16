@@ -50,7 +50,10 @@ ranges, use a dict instead of a string:
 hlines, hlines2). Reference lines: `hlines={"uniform": 10.8}` draws a dashed line
 at that level with a legend entry (`hlines2` for the right axis), and at run time
 `plot.hline(y, label, metric=...)` does the same, while `plot.mark("lr drop")`
-draws a dotted vertical line on every panel at the current x.
+draws a dotted vertical line on every panel at the current x. Smoothing: `smooth=20`
+on a panel (or on LivePlot, as the default for every panel) draws each curve as a
+rolling mean over the last 20 points, with the raw values faded behind it. Log
+axes: `yscale="log"` (`yscale2` for the right axis).
 
 How it works: the training thread only appends numbers (~40 us per `log`). A
 separate *render process* owns the matplotlib figure, redraws it at most once per
@@ -93,7 +96,8 @@ import time
 import warnings
 import weakref
 
-_PANEL_KEYS = {"title", "metrics", "secondary", "xlabel", "ylabel", "ylabel2", "xlim", "ylim", "ylim2", "hlines", "hlines2"}
+_PANEL_KEYS = {"title", "metrics", "secondary", "xlabel", "ylabel", "ylabel2", "xlim", "ylim", "ylim2", "hlines", "hlines2",
+               "smooth", "yscale", "yscale2"}
 
 
 def _normalise_hlines(spec) -> list:
@@ -137,7 +141,21 @@ def _normalise_panel(spec) -> dict:
         "ylim2": spec.get("ylim2"),
         "hlines": _normalise_hlines(spec.get("hlines")),  # reference lines on the left axis: {label: y} or [y, ...]
         "hlines2": _normalise_hlines(spec.get("hlines2")),  # ... and on the right axis
+        "smooth": spec.get("smooth"),  # rolling-mean window (points); None = plot-wide default; 0/1 = off
+        "yscale": spec.get("yscale", "linear"),  # "linear" or "log", left axis
+        "yscale2": spec.get("yscale2", "linear"),  # ... right axis
     }
+
+
+def _rolling_mean(ys, window: int):
+    """Mean of the last `window` points at each position (expanding at the start, so the curve starts at point 0)."""
+    import numpy as np
+
+    y = np.asarray(ys, dtype=float)
+    c = np.concatenate(([0.0], np.cumsum(y)))
+    i = np.arange(1, len(y) + 1)
+    lo = np.maximum(i - window, 0)
+    return (c[i] - c[lo]) / (i - lo)
 
 
 def _grid_shape(n_panels: int, max_cols: int | None, rows: int | None, cols: int | None) -> tuple[int, int]:
@@ -192,15 +210,25 @@ class _FigureRenderer:
         axes = self.fig.subplots(rows, cols, squeeze=False).flatten()
         palette = matplotlib.rcParams["axes.prop_cycle"].by_key()["color"]
         self.lines = {}
+        self.raw_lines = {}  # metric -> faded line of the unsmoothed values, on smoothed panels
+        self.smooth = {}  # metric -> rolling-mean window (> 1) or None
         self.fixed = {}  # axes -> (x fixed?, y fixed?): fixed axes are never autoscaled
         for ax, panel in zip(axes, panels):
             names = panel["metrics"] + panel["secondary"]
             ax2 = ax.twinx() if panel["secondary"] else None
+            ax.set_yscale(panel["yscale"])
+            if ax2 is not None:
+                ax2.set_yscale(panel["yscale2"])
+            window = panel["smooth"] if panel["smooth"] and panel["smooth"] > 1 else None
             handles = []
             for j, name in enumerate(names):
                 target = ax2 if name in panel["secondary"] else ax
-                (line,) = target.plot([], [], lw=1.2, color=palette[j % len(palette)], label=name)
+                color = palette[j % len(palette)]
+                if window:
+                    (self.raw_lines[name],) = target.plot([], [], lw=0.8, color=color, alpha=0.25)
+                (line,) = target.plot([], [], lw=1.2, color=color, label=name)
                 self.lines[name] = line
+                self.smooth[name] = window
                 self.hist.setdefault(name, ([], []))
                 handles.append(line)
             for target, key in ((ax, "hlines"), (ax2, "hlines2")):
@@ -250,7 +278,12 @@ class _FigureRenderer:
 
     def render(self) -> bytes:
         for name, line in self.lines.items():
-            line.set_data(*self.hist[name])
+            xs, ys = self.hist[name]
+            if self.smooth[name] and len(ys) > 1:
+                self.raw_lines[name].set_data(xs, ys)
+                line.set_data(xs, _rolling_mean(ys, self.smooth[name]))
+            else:
+                line.set_data(xs, ys)
         for line in self.lines.values():
             fixed_x, fixed_y = self.fixed[line.axes]
             line.axes.relim()
@@ -344,6 +377,7 @@ class LivePlot:
         progress: bool = True,
         desc: str | None = None,
         record: bool | str = False,
+        smooth: int | None = None,
     ):
         """
         LivePlot([iterable,] *panels, total=None, initial=0, unit="step", unit_scale=1, ...)
@@ -358,7 +392,8 @@ class LivePlot:
             x-axis (see module docstring).
         """
         iterable, specs = (args[0], args[1:]) if args and not isinstance(args[0], (str, dict)) else (None, args)
-        self.panels = [_normalise_panel(p) for p in specs]
+        self.smooth = smooth  # default rolling-mean window for panels that don't set their own
+        self.panels = [self._with_defaults(_normalise_panel(p)) for p in specs]
         self._explicit_layout = bool(self.panels)
         self._placed = {n for p in self.panels for n in p["metrics"] + p["secondary"]}
         self._layout = (max_cols, rows, cols, cell_size, dpi, unit)
@@ -413,6 +448,11 @@ class LivePlot:
         if get_ipython() is None:
             return None
         return display(HTML("<i>live plot: waiting for the first frame…</i>"), display_id=True)
+
+    def _with_defaults(self, panel):
+        if panel["smooth"] is None:
+            panel["smooth"] = self.smooth
+        return panel
 
     def _panels_or_placeholder(self):
         return self.panels or [_normalise_panel({"title": "waiting for data…", "metrics": ["_"]})]
@@ -554,9 +594,9 @@ class LivePlot:
             return
         if self._explicit_layout:
             for m in unplaced:
-                self.panels.append(_normalise_panel({"metrics": [m]}))
+                self.panels.append(self._with_defaults(_normalise_panel({"metrics": [m]})))
         elif not self.panels:
-            self.panels.append(_normalise_panel({"metrics": unplaced}))
+            self.panels.append(self._with_defaults(_normalise_panel({"metrics": unplaced})))
         else:
             self.panels[0]["metrics"].extend(unplaced)
             self.panels[0]["title"] = " / ".join(self.panels[0]["metrics"])
