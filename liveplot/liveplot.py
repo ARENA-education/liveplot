@@ -46,7 +46,11 @@ ranges, use a dict instead of a string:
 
     {"metrics": ["acc"], "ylim": (0, 1), "ylabel": "test accuracy", "xlabel": "epoch"}
 
-(allowed keys: title, metrics, secondary, xlabel, ylabel, ylabel2, xlim, ylim, ylim2).
+(allowed keys: title, metrics, secondary, xlabel, ylabel, ylabel2, xlim, ylim, ylim2,
+hlines, hlines2). Reference lines: `hlines={"uniform": 10.8}` draws a dashed line
+at that level with a legend entry (`hlines2` for the right axis), and at run time
+`plot.hline(y, label, metric=...)` does the same, while `plot.mark("lr drop")`
+draws a dotted vertical line on every panel at the current x.
 
 How it works: the training thread only appends numbers (~40 us per `log`). A
 separate *render process* owns the matplotlib figure, redraws it at most once per
@@ -89,7 +93,16 @@ import time
 import warnings
 import weakref
 
-_PANEL_KEYS = {"title", "metrics", "secondary", "xlabel", "ylabel", "ylabel2", "xlim", "ylim", "ylim2"}
+_PANEL_KEYS = {"title", "metrics", "secondary", "xlabel", "ylabel", "ylabel2", "xlim", "ylim", "ylim2", "hlines", "hlines2"}
+
+
+def _normalise_hlines(spec) -> list:
+    """{"label": y, ...} or [y, ...] -> [(label, y), ...]"""
+    if not spec:
+        return []
+    if isinstance(spec, dict):
+        return [(str(k), float(v)) for k, v in spec.items()]
+    return [(f"{float(y):g}", float(y)) for y in spec]
 
 
 # --------------------------------------------------------------------------- panel specs
@@ -122,6 +135,8 @@ def _normalise_panel(spec) -> dict:
         "xlim": spec.get("xlim"),
         "ylim": spec.get("ylim"),
         "ylim2": spec.get("ylim2"),
+        "hlines": _normalise_hlines(spec.get("hlines")),  # reference lines on the left axis: {label: y} or [y, ...]
+        "hlines2": _normalise_hlines(spec.get("hlines2")),  # ... and on the right axis
     }
 
 
@@ -160,6 +175,7 @@ class _FigureRenderer:
     def __init__(self, panels, xlim, layout, hist=None):
         self.xlim, self.layout = xlim, layout  # xlim = default x range or None; layout = (max_cols, rows, cols, cell_size, dpi, xlabel)
         self.hist = hist if hist is not None else {}
+        self.marks: list[tuple[float, str | None]] = []  # vertical reference lines (x, label), drawn on every panel
         self.set_layout(panels)
 
     def set_layout(self, panels):
@@ -187,6 +203,10 @@ class _FigureRenderer:
                 self.lines[name] = line
                 self.hist.setdefault(name, ([], []))
                 handles.append(line)
+            for target, key in ((ax, "hlines"), (ax2, "hlines2")):
+                for label, y in panel[key] if target is not None else []:
+                    handles.append(target.axhline(y, ls="--", lw=1, color="0.45", label=label))
+                    names = names + [label]
             ax.set_title(panel["title"])
             ax.set_xlabel(panel["xlabel"] or xlabel)
             xlim = panel["xlim"] or self.xlim
@@ -196,7 +216,7 @@ class _FigureRenderer:
                 ax.set_ylim(*panel["ylim"])
             self.fixed[ax] = (xlim is not None, panel["ylim"] is not None)
             if names != ["_"]:  # (the "waiting for data" placeholder has no legend)
-                ax.legend(handles, names, loc="best", fontsize=8)  # every panel gets a legend
+                ax.legend(handles, names, loc="best", fontsize=8)  # every panel gets a legend (reference lines included)
             if ax2 is not None:
                 ax.set_ylabel(panel["ylabel"] or ", ".join(panel["metrics"]))
                 ax2.set_ylabel(panel["ylabel2"] or ", ".join(panel["secondary"]))
@@ -207,7 +227,20 @@ class _FigureRenderer:
                 ax.set_ylabel(panel["ylabel"])
         for ax in axes[n:]:
             ax.set_visible(False)
+        self.axes = list(axes[:n])
+        for x, label in self.marks:
+            self._draw_mark(x, label)
         self.fig.tight_layout()
+
+    def add_mark(self, x, label=None):
+        self.marks.append((x, label))
+        self._draw_mark(x, label)
+
+    def _draw_mark(self, x, label):
+        for ax in self.axes:
+            ax.axvline(x, ls=":", lw=1, color="0.45")
+            if label:
+                ax.text(x, 0.98, f" {label}", transform=ax.get_xaxis_transform(), va="top", ha="left", fontsize=7, color="0.3", rotation=90)
 
     def add(self, step, metrics: dict):
         for name, value in metrics.items():
@@ -267,6 +300,9 @@ def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_
                 running = False
             elif item[0] == "layout":
                 renderer.set_layout(item[1])
+                dirty = True
+            elif item[0] == "mark":
+                renderer.add_mark(item[1], item[2])
                 dirty = True
             else:
                 renderer.add(item[1], item[2])
@@ -343,6 +379,7 @@ class LivePlot:
         self._record = bool(record)
         self._record_path = record if isinstance(record, str) else None
         self.frames: list[tuple[float, bytes]] = []  # (time, png) of every frame shown, if record=True
+        self.marks: list[tuple[float, str | None]] = []  # vertical reference lines added with mark()
         self._t0 = time.monotonic()
         self._done = False
         self._proc = self._renderer = self._inbox = self._outbox = None
@@ -524,6 +561,38 @@ class LivePlot:
             self.panels[0]["metrics"].extend(unplaced)
             self.panels[0]["title"] = " / ".join(self.panels[0]["metrics"])
         self._placed.update(unplaced)
+        self._send_layout()
+
+    def hline(self, y, label=None, metric=None):
+        """
+        Draw a dashed horizontal reference line, with `label` in the legend: on the axis of `metric`'s
+        panel, or on the left axis of every panel if `metric` is None. E.g. the loss a model must beat:
+        `plot.hline(math.log(d_vocab), "uniform", metric="loss")`.
+        """
+        label = str(label) if label is not None else f"{float(y):g}"
+        for panel in self.panels:
+            if metric is None:
+                panel["hlines"].append((label, float(y)))
+            elif metric in panel["metrics"]:
+                panel["hlines"].append((label, float(y)))
+            elif metric in panel["secondary"]:
+                panel["hlines2"].append((label, float(y)))
+        if metric is not None and metric not in self._placed:
+            self.data.setdefault(metric, ([], []))  # let the panel be created now so the line has somewhere to go
+            self._extend_layout([metric])
+            return self.hline(y, label, metric)
+        self._send_layout()
+
+    def mark(self, label=None, x=None):
+        """Draw a dotted vertical line on every panel at the current x (or `x`), e.g. `plot.mark("lr drop")`."""
+        x = self.step if x is None else x
+        self.marks.append((x, label))
+        if self.mode == "process":
+            self._inbox.put(("mark", x, label))
+        elif self.mode == "thread":
+            self._renderer.add_mark(x, label)
+
+    def _send_layout(self):
         if self.mode == "process":
             self._inbox.put(("layout", self.panels))
         elif self.mode == "thread":
@@ -586,6 +655,8 @@ class LivePlot:
         self._renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout)
         for name, (xs, ys) in self.data.items():
             self._renderer.hist[name] = (list(xs), list(ys))
+        for x, label in self.marks:
+            self._renderer.add_mark(x, label)
         self.mode = "thread"
 
     def _collect(self, block: bool, timeout: float = 15.0):

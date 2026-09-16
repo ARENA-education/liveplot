@@ -87,7 +87,19 @@ For labels or fixed ranges, use a dict instead of a string for that panel:
 {"metrics": ["acc"], "ylim": (0, 1), "ylabel": "test accuracy", "xlabel": "epoch"}
 ```
 
-Allowed keys: `title`, `metrics`, `secondary`, `xlabel`, `ylabel`, `ylabel2`, `xlim`, `ylim`, `ylim2`.
+Allowed keys: `title`, `metrics`, `secondary`, `xlabel`, `ylabel`, `ylabel2`, `xlim`, `ylim`, `ylim2`, `hlines`, `hlines2`.
+
+## Reference lines
+
+A dashed horizontal line with a legend entry, for the level a curve should reach or beat:
+
+```python
+LivePlot(range(N), {"metrics": ["loss"], "hlines": {"uniform": math.log(d_vocab), "unigram": 7.35}})
+plot.hline(500, "solved", metric="return")     # at run time; goes on the axis of that metric's panel
+plot.mark("lr drop")                            # a dotted vertical line on every panel at the current x
+```
+
+`hlines` takes `{label: y}` or a list of values; `hlines2` is the same for the right-hand axis.
 
 `plot.log` accepts keywords, an explicit step (`plot.log(step, loss=...)`), or a dict (`plot.log(step, {"loss": ...})`). Values can be anything `float()` accepts, including one-element tensors. `plot.data` holds the full history as `{metric: (steps, values)}` and `plot.latest` the most recent value of each.
 
