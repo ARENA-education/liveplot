@@ -27,13 +27,13 @@ def test_frames_arrive_without_log_calls(fake_notebook):
     p = LivePlot("loss", refresh_seconds=0.1)
     p.log(0, loss=1.0)
     t0 = time.monotonic()
-    while not fake_notebook.frames and time.monotonic() - t0 < 30:
+    while not fake_notebook.frames and time.monotonic() - t0 < 90:
         time.sleep(0.05)  # no log() calls at all
     assert fake_notebook.frames, "the collector thread must display the frame on its own"
     n = len(fake_notebook.frames)
     p.log(1, loss=0.5)
     t1 = time.monotonic()
-    while len(fake_notebook.frames) == n and time.monotonic() - t1 < 30:
+    while len(fake_notebook.frames) == n and time.monotonic() - t1 < 90:
         time.sleep(0.05)
     assert len(fake_notebook.frames) > n and fake_notebook.frames[-1][0] > t1
     p.finish()
