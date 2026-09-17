@@ -87,7 +87,7 @@ For labels or fixed ranges, use a dict instead of a string for that panel:
 {"metrics": ["acc"], "ylim": (0, 1), "ylabel": "test accuracy", "xlabel": "epoch"}
 ```
 
-Allowed keys: `title`, `metrics`, `secondary`, `xlabel`, `ylabel`, `ylabel2`, `xlim`, `ylim`, `ylim2`, `axhlines`, `axhlines2`. Where a key has a matplotlib counterpart it uses matplotlib's name (`ax.set(title=..., xlabel=..., xlim=..., yscale=...)`); the `2` suffix means the right-hand axis.
+Allowed keys: `title`, `metrics`, `secondary`, `xlabel`, `ylabel`, `ylabel2`, `xlim`, `ylim`, `ylim2`, `axhlines`, `axhlines2`, `smooth`, `yscale`, `yscale2`. Where a key has a matplotlib counterpart it uses matplotlib's name (`ax.set(title=..., xlabel=..., xlim=..., yscale=...)`); the `2` suffix means the right-hand axis.
 
 ## Reference lines
 
@@ -101,6 +101,14 @@ plot.axhline(0.9, "target", metric="acc", color="red", linestyle="-")   # extra 
 ```
 
 In a panel dict, `axhlines` takes `{label: y}`, a list of values, or a list of `axhline` kwargs such as `dict(y=0.9, label="target", color="red")`; `axhlines2` is the same for the right-hand axis.
+
+## Smoothing and log axes
+
+Per-step losses are noisy. `smooth=0.9` on a panel draws each of its curves through wandb's default smoothing, the time-weighted exponential moving average, with the same 0 to 1 weight as wandb's smoothing slider and the raw values faded behind. `LivePlot(..., smooth=0.9)` makes that the default for every panel, and `"smooth": 0` on a panel opts out. `yscale="log"` (and `yscale2` for the right axis) gives a log axis.
+
+```python
+LivePlot(range(N), {"metrics": ["loss"], "smooth": 0.9, "yscale": "log"}, "acc")
+```
 
 `plot.log` accepts keywords, an explicit step (`plot.log(step, loss=...)`), or a dict (`plot.log(step, {"loss": ...})`). Values can be anything `float()` accepts, including one-element tensors. `plot.data` holds the full history as `{metric: (steps, values)}` and `plot.latest` the most recent value of each.
 
