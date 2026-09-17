@@ -1,0 +1,45 @@
+name: site
+
+# Builds the documentation site (mkdocs, from README.md and docs/*.md) and, on pushes to main,
+# force-pushes it to the orphan `gh-pages` branch that GitHub Pages serves. On pull requests it
+# only builds, with --strict so broken links fail the check.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install mkdocs
+      - name: Build (README becomes the front page)
+        run: |
+          set -e
+          # images live next to the pages; links into the repo point at GitHub
+          sed -e 's|](docs/|](|g' -e 's|](examples/|](https://github.com/ARENA-education/liveplot/blob/main/examples/|g' README.md > docs/index.md
+          mkdocs build --strict
+      - name: Publish to gh-pages
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: |
+          set -e
+          cd site
+          touch .nojekyll
+          git init -q -b gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Build site from main ${GITHUB_SHA::7}"
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push -q --force origin gh-pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

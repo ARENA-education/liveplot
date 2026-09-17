@@ -5,3 +5,5 @@ build/
 dist/
 .pytest_cache/
 tour.gif
+docs/index.md
+site/
