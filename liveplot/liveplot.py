@@ -73,6 +73,8 @@ terminated when the LivePlot object is garbage collected, so an interrupted cell
 leaves a frozen plot with `plot.data` intact and no stray process. Outside a
 notebook nothing is drawn; `plot.data` still collects everything.
 
+`plot.figure()` returns a matplotlib Figure of the current state, for saving or tweaking.
+
 Recording: `LivePlot(..., record=True)` keeps every rendered frame in `plot.frames`
 (as PNG bytes with timestamps) and `plot.save_gif("run.gif")` stitches them into an
 animated GIF that replays at the real pace; `record="run.gif"` does that at
@@ -673,6 +675,20 @@ class LivePlot:
             self._inbox.put(("layout", self.panels))
         elif self.mode == "thread":
             self._renderer.set_layout(self.panels)
+
+    def figure(self):
+        """
+        A matplotlib Figure of the plot as it stands (same panels, data, reference lines and marks),
+        built on the calling thread and independent of the render process: title it, tweak it,
+        `fig.savefig("run.png")`, or show it in a report. Safe to call during or after training.
+        """
+        renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout)
+        for name, (xs, ys) in self.data.items():
+            renderer.hist[name] = (list(xs), list(ys))
+        for line in self.axvlines:
+            renderer.add_axvline(line)
+        renderer.render()  # sets the line data and autoscales
+        return renderer.fig
 
     def refresh(self):
         """Force a redraw now (thread mode only; the render process paces itself)."""
