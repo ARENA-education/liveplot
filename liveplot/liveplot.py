@@ -67,6 +67,9 @@ Code and Cursor: no widgets, no CDN, no JavaScript. The progress bar is tqdm
 (`tqdm.auto`), shown below the plot with the latest logged values as its postfix;
 pass an existing tqdm object as the iterable to reuse yours instead.
 
+Frames are shown by a small background thread as soon as the renderer produces
+them, so a loop that logs rarely still sees each frame when it is ready.
+
 Interrupts: the render process ignores SIGINT (Jupyter's "interrupt kernel" is sent
 to the whole process group), exits by itself if the notebook process dies, and is
 terminated when the LivePlot object is garbage collected, so an interrupted cell
@@ -97,6 +100,7 @@ import os
 import queue
 import signal
 import sys
+import threading
 import time
 import warnings
 import weakref
@@ -393,6 +397,43 @@ def _terminate(proc, inbox):
             proc.terminate()
 
 
+def _collect_loop(plot_ref, outbox, proc, done):
+    """
+    Background thread of a LivePlot: show each frame as the renderer produces it (only the newest
+    if several queued up); stop after the renderer's final None, when the renderer is gone, or when
+    the LivePlot itself has been garbage collected.
+    """
+    try:
+        while True:
+            try:
+                item = outbox.get(timeout=0.5)
+            except queue.Empty:
+                plot = plot_ref()
+                if plot is None or plot.mode != "process" or not proc.is_alive():
+                    break
+                continue
+            if item is None:
+                break
+            while True:
+                try:
+                    newer = outbox.get_nowait()
+                except queue.Empty:
+                    break
+                if newer is None:
+                    plot = plot_ref()
+                    if plot is not None:
+                        plot._show(item)
+                    return
+                item = newer
+            plot = plot_ref()
+            if plot is None:
+                break
+            plot._show(item)
+            del plot  # don't hold the reference while blocked on the queue
+    finally:
+        done.set()
+
+
 # --------------------------------------------------------------------------- the handle
 
 
@@ -517,6 +558,17 @@ class LivePlot:
             if main is not None:
                 main.__dict__.update(hidden)
         weakref.finalize(self, _terminate, self._proc, self._inbox)  # dropped without finish() -> no leak
+        # Frames are displayed by this thread as soon as the renderer produces them, so a loop that
+        # logs rarely (or is busy in a long step) still sees each frame when it is ready rather than
+        # on its next log() call. Everything it touches is a plain attribute write or a display update.
+        self._collector_done = threading.Event()
+        # The thread gets only a weak reference to the plot: a strong one (e.g. a bound method as the
+        # target) would keep a dropped LivePlot alive forever and its render process with it.
+        self._collector = threading.Thread(
+            target=_collect_loop, args=(weakref.ref(self), self._outbox, self._proc, self._collector_done),
+            name="liveplot-frames", daemon=True,
+        )
+        self._collector.start()
 
     def _make_bar(self, it, tqdm_kwargs):
         if not self._progress:
@@ -613,8 +665,6 @@ class LivePlot:
             self._n_logs += 1
             if self._n_logs % 100 == 0 and not self._proc.is_alive():
                 self._fall_back_to_thread("the render process died")
-            else:
-                self._collect(block=False)
         if self.mode == "thread":
             self._renderer.add(step, picked)
             if time.monotonic() - self._last_draw >= self.refresh_seconds:
@@ -703,8 +753,8 @@ class LivePlot:
         try:
             if self.mode == "process":
                 if self._proc.is_alive():
-                    self._inbox.put(None)
-                    self._collect(block=True, timeout=5.0)
+                    self._inbox.put(None)  # renderer draws the final frame, sends it, then None
+                self._collector_done.wait(timeout=5.0)  # the collector shows that frame and exits
             elif self.mode == "thread":
                 self._show(self._renderer.render())
         finally:
@@ -751,24 +801,6 @@ class LivePlot:
         for line in self.axvlines:
             self._renderer.add_axvline(line)
         self.mode = "thread"
-
-    def _collect(self, block: bool, timeout: float = 15.0):
-        """Take the newest frame off the outbox (if any) and display it."""
-        png, deadline = None, time.monotonic() + timeout
-        while True:
-            try:
-                item = self._outbox.get(timeout=max(0.0, deadline - time.monotonic())) if block else self._outbox.get_nowait()
-            except queue.Empty:
-                break
-            if item is None:  # renderer has sent its final frame
-                break
-            png = item
-            if not block:
-                break
-            if not self._proc.is_alive() and self._outbox.empty():
-                break
-        if png is not None:
-            self._show(png)
 
     def _show(self, png: bytes):
         self.last_png = png
