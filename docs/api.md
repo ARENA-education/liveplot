@@ -15,7 +15,7 @@ LivePlot([iterable,] *panels, total=None, initial=0, unit="step", unit_scale=1,
 | `iterable` | anything you would wrap with tqdm: a range, a DataLoader, an existing tqdm bar. Iterating the plot yields its items, shows a tqdm bar under the plot, and finishes the plot when the loop ends. Leave it out for nested loops and use `plot(inner)` instead. |
 | `*panels` | layout strings, one per panel: `"loss"`, `"return | entropy"`, `"lossD lossG | acc"`. Names separated by spaces share the left y-axis; names after `|` go on a right-hand axis. With no strings, every metric shares one panel. Metrics no string mentions get a panel of their own. |
 | `total`, `initial`, `unit`, `unit_scale` | tqdm's arguments, with tqdm's meaning. They define the x-axis: `x = initial + n * unit_scale`, where `n` counts items consumed. `total` is in items and fixes the x range; the single-loop form takes it from `len(iterable)`. |
-| `refresh_seconds` | minimum time between redraws. `0` redraws on every arrival, as fast as rendering allows, and costs nothing while idle. |
+| `refresh_seconds` | minimum time between redraws, default 0.2 s. `0` redraws on every arrival, as fast as rendering allows, and costs nothing while idle. |
 | `smooth` | default smoothing weight for every panel, wandb's time-weighted EMA in `[0, 1)`. |
 | `max_cols`, `rows`, `cols` | grid shape. `max_cols=None` gives a near-square grid. |
 | `progress`, `desc` | switch the tqdm bars off, or give the single-loop form's bar a description. |
