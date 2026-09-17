@@ -47,12 +47,16 @@ ranges, use a dict instead of a string:
     {"metrics": ["acc"], "ylim": (0, 1), "ylabel": "test accuracy", "xlabel": "epoch"}
 
 (allowed keys: title, metrics, secondary, xlabel, ylabel, ylabel2, xlim, ylim, ylim2,
-axhlines, axhlines2; the names follow matplotlib's `Axes.set(...)` keywords, with a
-`2` suffix for the right-hand axis). Reference lines follow matplotlib too:
-`axhlines={"uniform": 10.8}` in a panel (or a list of `axhline` kwargs) draws a
-dashed line at that level with a legend entry, `plot.axhline(y, label, metric=...)`
-does the same at run time, and `plot.axvline(label="lr drop")` draws a dotted
-vertical line on every panel at the current x. Extra kwargs go to the artists.
+axhlines, axhlines2, smooth, yscale, yscale2; the names follow matplotlib's
+`Axes.set(...)` keywords, with a `2` suffix for the right-hand axis). Reference
+lines follow matplotlib too: `axhlines={"uniform": 10.8}` in a panel (or a list of
+`axhline` kwargs) draws a dashed line at that level with a legend entry,
+`plot.axhline(y, label, metric=...)` does the same at run time, and
+`plot.axvline(label="lr drop")` draws a dotted vertical line on every panel at the
+current x. Extra kwargs go to the artists. Smoothing: `smooth=0.9` on a panel (or
+on LivePlot, as the default for every panel) draws each curve as wandb's
+time-weighted EMA with that weight, with the raw values faded behind it. Log axes:
+`yscale="log"` (`yscale2` for the right axis).
 
 How it works: the training thread only appends numbers (~40 us per `log`). A
 separate *render process* owns the matplotlib figure, redraws it at most once per
@@ -68,6 +72,8 @@ to the whole process group), exits by itself if the notebook process dies, and i
 terminated when the LivePlot object is garbage collected, so an interrupted cell
 leaves a frozen plot with `plot.data` intact and no stray process. Outside a
 notebook nothing is drawn; `plot.data` still collects everything.
+
+`plot.figure()` returns a matplotlib Figure of the current state, for saving or tweaking.
 
 Recording: `LivePlot(..., record=True)` keeps every rendered frame in `plot.frames`
 (as PNG bytes with timestamps) and `plot.save_gif("run.gif")` stitches them into an
@@ -95,7 +101,8 @@ import time
 import warnings
 import weakref
 
-_PANEL_KEYS = {"title", "metrics", "secondary", "xlabel", "ylabel", "ylabel2", "xlim", "ylim", "ylim2", "axhlines", "axhlines2"}
+_PANEL_KEYS = {"title", "metrics", "secondary", "xlabel", "ylabel", "ylabel2", "xlim", "ylim", "ylim2", "axhlines", "axhlines2",
+               "smooth", "yscale", "yscale2"}
 _REF_LINE_STYLE = {"linestyle": "--", "linewidth": 1, "color": "0.45"}  # defaults for axhline / axvline artists
 
 
@@ -152,7 +159,35 @@ def _normalise_panel(spec) -> dict:
         "ylim2": spec.get("ylim2"),
         "axhlines": _normalise_axhlines(spec.get("axhlines")),  # reference lines on the left axis (see _normalise_axhlines)
         "axhlines2": _normalise_axhlines(spec.get("axhlines2")),  # ... and on the right axis
+        "smooth": spec.get("smooth"),  # TWEMA weight in [0, 1); None = plot-wide default; 0 = off
+        "yscale": spec.get("yscale", "linear"),  # "linear" or "log", left axis
+        "yscale2": spec.get("yscale2", "linear"),  # ... right axis
     }
+
+
+_TWEMA_VIEWPORT_SCALE = 1000  # x is measured in thousandths of the plotted range, as in wandb
+
+
+def _twema(xs, ys, weight: float, x_range: float):
+    """
+    wandb's default smoothing, the time-weighted exponential moving average, exactly as documented at
+    docs.wandb.ai/models/app/features/panels/line-plot/smoothing: the smoothing weight is
+    min(sqrt(param), 0.999); each step decays the running sum by weight ** dx, where dx is the gap to
+    the previous point in thousandths of the x-range (so the result depends on where points sit, not
+    on how many there are); a debiasing accumulator stops early values leaning towards zero.
+    """
+    import numpy as np
+
+    x, y = np.asarray(xs, dtype=float), np.asarray(ys, dtype=float)
+    w = min(math.sqrt(max(weight, 0.0)), 0.999)
+    dx = np.diff(x, prepend=x[0]) / max(x_range, 1e-12) * _TWEMA_VIEWPORT_SCALE
+    decay = w**dx
+    out, last, debias = np.empty_like(y), 0.0, 0.0
+    for i in range(len(y)):
+        last = last * decay[i] + y[i]
+        debias = debias * decay[i] + 1.0
+        out[i] = last / debias
+    return out
 
 
 def _grid_shape(n_panels: int, max_cols: int | None, rows: int | None, cols: int | None) -> tuple[int, int]:
@@ -207,15 +242,26 @@ class _FigureRenderer:
         axes = self.fig.subplots(rows, cols, squeeze=False).flatten()
         palette = matplotlib.rcParams["axes.prop_cycle"].by_key()["color"]
         self.lines = {}
+        self.raw_lines = {}  # metric -> faded line of the unsmoothed values, on smoothed panels
+        self.smooth = {}  # metric -> TWEMA weight in (0, 1) or None
         self.fixed = {}  # axes -> (x fixed?, y fixed?): fixed axes are never autoscaled
         for ax, panel in zip(axes, panels):
             names = panel["metrics"] + panel["secondary"]
             ax2 = ax.twinx() if panel["secondary"] else None
+            ax.set_yscale(panel["yscale"])
+            if ax2 is not None:
+                ax2.set_yscale(panel["yscale2"])
+            window = panel["smooth"] if panel["smooth"] else None  # TWEMA weight in (0, 1)
+            assert window is None or 0 < window < 1, f"smooth must be a weight in (0, 1), got {window!r}"
             handles = []
             for j, name in enumerate(names):
                 target = ax2 if name in panel["secondary"] else ax
-                (line,) = target.plot([], [], lw=1.2, color=palette[j % len(palette)], label=name)
+                color = palette[j % len(palette)]
+                if window:
+                    (self.raw_lines[name],) = target.plot([], [], lw=0.8, color=color, alpha=0.25)
+                (line,) = target.plot([], [], lw=1.2, color=color, label=name)
                 self.lines[name] = line
+                self.smooth[name] = window
                 self.hist.setdefault(name, ([], []))
                 handles.append(line)
             for target, key in ((ax, "axhlines"), (ax2, "axhlines2")):
@@ -267,7 +313,13 @@ class _FigureRenderer:
 
     def render(self) -> bytes:
         for name, line in self.lines.items():
-            line.set_data(*self.hist[name])
+            xs, ys = self.hist[name]
+            if self.smooth[name] and len(ys) > 1:
+                self.raw_lines[name].set_data(xs, ys)
+                x_range = (self.xlim[1] - self.xlim[0]) if self.xlim else (max(xs) - min(xs))
+                line.set_data(xs, _twema(xs, ys, self.smooth[name], x_range))
+            else:
+                line.set_data(xs, ys)
         for line in self.lines.values():
             fixed_x, fixed_y = self.fixed[line.axes]
             line.axes.relim()
@@ -361,6 +413,7 @@ class LivePlot:
         progress: bool = True,
         desc: str | None = None,
         record: bool | str = False,
+        smooth: float | None = None,
     ):
         """
         LivePlot([iterable,] *panels, total=None, initial=0, unit="step", unit_scale=1, ...)
@@ -375,7 +428,8 @@ class LivePlot:
             x-axis (see module docstring).
         """
         iterable, specs = (args[0], args[1:]) if args and not isinstance(args[0], (str, dict)) else (None, args)
-        self.panels = [_normalise_panel(p) for p in specs]
+        self.smooth = smooth  # default TWEMA weight for panels that don't set their own (wandb's smoothing slider)
+        self.panels = [self._with_defaults(_normalise_panel(p)) for p in specs]
         self._explicit_layout = bool(self.panels)
         self._placed = {n for p in self.panels for n in p["metrics"] + p["secondary"]}
         self._layout = (max_cols, rows, cols, cell_size, dpi, unit)
@@ -430,6 +484,11 @@ class LivePlot:
         if get_ipython() is None:
             return None
         return display(HTML("<i>live plot: waiting for the first frame…</i>"), display_id=True)
+
+    def _with_defaults(self, panel):
+        if panel["smooth"] is None:
+            panel["smooth"] = self.smooth
+        return panel
 
     def _panels_or_placeholder(self):
         return self.panels or [_normalise_panel({"title": "waiting for data…", "metrics": ["_"]})]
@@ -571,9 +630,9 @@ class LivePlot:
             return
         if self._explicit_layout:
             for m in unplaced:
-                self.panels.append(_normalise_panel({"metrics": [m]}))
+                self.panels.append(self._with_defaults(_normalise_panel({"metrics": [m]})))
         elif not self.panels:
-            self.panels.append(_normalise_panel({"metrics": unplaced}))
+            self.panels.append(self._with_defaults(_normalise_panel({"metrics": unplaced})))
         else:
             self.panels[0]["metrics"].extend(unplaced)
             self.panels[0]["title"] = " / ".join(self.panels[0]["metrics"])
@@ -616,6 +675,20 @@ class LivePlot:
             self._inbox.put(("layout", self.panels))
         elif self.mode == "thread":
             self._renderer.set_layout(self.panels)
+
+    def figure(self):
+        """
+        A matplotlib Figure of the plot as it stands (same panels, data, reference lines and marks),
+        built on the calling thread and independent of the render process: title it, tweak it,
+        `fig.savefig("run.png")`, or show it in a report. Safe to call during or after training.
+        """
+        renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout)
+        for name, (xs, ys) in self.data.items():
+            renderer.hist[name] = (list(xs), list(ys))
+        for line in self.axvlines:
+            renderer.add_axvline(line)
+        renderer.render()  # sets the line data and autoscales
+        return renderer.fig
 
     def refresh(self):
         """Force a redraw now (thread mode only; the render process paces itself)."""
