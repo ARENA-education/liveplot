@@ -181,6 +181,7 @@ def test_interrupt_inside_with_block_is_clean(fake_notebook):
     assert len(p.data["loss"][0]) == n_warmup + 31 and fake_notebook.frames, "final frame drawn, data kept"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.kill(pid, SIGINT) terminates the process on Windows")
 def test_render_child_ignores_sigint(fake_notebook):
     """Jupyter's interrupt goes to the whole process group; the renderer must shrug it off."""
     p = LivePlot(refresh_seconds=0.1)

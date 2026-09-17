@@ -2,6 +2,10 @@
 
 Live training curves in Jupyter, Colab and the VS Code / Cursor interactive window, with a tqdm bar underneath, at (almost) no cost to the training loop.
 
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ARENA-education/liveplot/blob/demo/examples/demo.ipynb) [![tests](https://github.com/ARENA-education/liveplot/actions/workflows/tests.yml/badge.svg)](https://github.com/ARENA-education/liveplot/actions/workflows/tests.yml)
+
+Try it in Colab with the badge above: that notebook is [`examples/demo.py`](examples/demo.py), a cell-by-cell tour of the features, which CI converts with jupytext and publishes to the `demo` branch on every push to `main`.
+
 ![training loss every step, eval loss and accuracy every 50 steps, on one panel with two y-axes](docs/demo.gif)
 
 The GIF is cell 2 of [`examples/demo.py`](examples/demo.py), a tour of the features in a cell-separated file: open it in the VS Code / Cursor interactive window and run it cell by cell. That cell trains a tiny numpy classifier, logging the training loss every step and the eval loss and accuracy every 50 steps, laid out as `"loss | eval_loss eval_acc"`. The GIF itself was recorded by the library: `examples/make_gif.py` runs the same loop as a plain script with `record="docs/demo.gif"`.
