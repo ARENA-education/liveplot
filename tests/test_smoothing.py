@@ -77,7 +77,7 @@ def test_renderer_smooths_and_fades_raw():
 def test_plot_wide_default_and_override():
     p = LivePlot("loss", {"metrics": ["acc"], "smooth": 0}, smooth=0.9)
     p.log(0, loss=1.0, acc=0.5, lr=1e-3)  # lr is discovered -> gets the default too
-    assert [pn["smooth"] for pn in p.panels] == [0.9, 0, 0.9]
+    assert [pn["smooth"] for pn in p._specs] == [0.9, 0, 0.9]
     q = LivePlot()
     q.log(0, loss=1.0)
-    assert q.panels[0]["smooth"] is None
+    assert q._specs[0]["smooth"] is None
