@@ -107,6 +107,26 @@ The dict form, `{"metrics": ["acc"], "ylim": (0, 1), ...}`, is still accepted in
 
 `plot.log` accepts keywords, an explicit step (`plot.log(step, loss=...)`), or a dict (`plot.log(step, {"loss": ...})`). Values can be anything `float()` accepts, including one-element tensors. `plot.data` holds the full history as `{metric: (steps, values)}` and `plot.latest` the most recent value of each.
 
+## Reference lines
+
+Matplotlib's `axhline` / `axvline`, on an axis, a panel, or the whole plot. Horizontal lines get a legend entry; extra kwargs go to the artist.
+
+```python
+plot["loss"].axhline(math.log(d_vocab), "uniform")        # the level a curve should beat
+plot["return"].axhline(500, "solved", color="green")
+plot.axvline(label="lr drop")                             # every panel, at the current x
+plot.panels[1].axvline(2000, "checkpoint", linestyle="-")  # one panel, at a given x
+```
+
+## Smoothing and log axes
+
+Per-step losses are noisy. `set_smooth(0.9)` draws each curve of a panel through wandb's default smoothing, the [time-weighted exponential moving average](https://docs.wandb.ai/models/app/features/panels/line-plot/smoothing), with the same 0 to 1 weight as wandb's smoothing slider and the raw values faded behind. On the plot it applies to every panel; `set_smooth(0)` turns it off. `set_yscale("log")` on an axis, a panel, or the plot gives log axes.
+
+```python
+plot.set_smooth(0.9)
+plot["loss"].set_yscale("log")
+```
+
 ## Credits
 
 The per-panel label/limit options and the grid-shape rule are adapted from Tyler Lum's [live_plotter](https://github.com/tylerlum/live_plotter) (MIT); see `THIRD_PARTY_LICENSES.md`.
