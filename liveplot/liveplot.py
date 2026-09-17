@@ -47,10 +47,12 @@ ranges, use a dict instead of a string:
     {"metrics": ["acc"], "ylim": (0, 1), "ylabel": "test accuracy", "xlabel": "epoch"}
 
 (allowed keys: title, metrics, secondary, xlabel, ylabel, ylabel2, xlim, ylim, ylim2,
-hlines, hlines2). Reference lines: `hlines={"uniform": 10.8}` draws a dashed line
-at that level with a legend entry (`hlines2` for the right axis), and at run time
-`plot.hline(y, label, metric=...)` does the same, while `plot.mark("lr drop")`
-draws a dotted vertical line on every panel at the current x.
+axhlines, axhlines2; the names follow matplotlib's `Axes.set(...)` keywords, with a
+`2` suffix for the right-hand axis). Reference lines follow matplotlib too:
+`axhlines={"uniform": 10.8}` in a panel (or a list of `axhline` kwargs) draws a
+dashed line at that level with a legend entry, `plot.axhline(y, label, metric=...)`
+does the same at run time, and `plot.axvline(label="lr drop")` draws a dotted
+vertical line on every panel at the current x. Extra kwargs go to the artists.
 
 How it works: the training thread only appends numbers (~40 us per `log`). A
 separate *render process* owns the matplotlib figure, redraws it at most once per
@@ -93,16 +95,29 @@ import time
 import warnings
 import weakref
 
-_PANEL_KEYS = {"title", "metrics", "secondary", "xlabel", "ylabel", "ylabel2", "xlim", "ylim", "ylim2", "hlines", "hlines2"}
+_PANEL_KEYS = {"title", "metrics", "secondary", "xlabel", "ylabel", "ylabel2", "xlim", "ylim", "ylim2", "axhlines", "axhlines2"}
+_REF_LINE_STYLE = {"linestyle": "--", "linewidth": 1, "color": "0.45"}  # defaults for axhline / axvline artists
 
 
-def _normalise_hlines(spec) -> list:
-    """{"label": y, ...} or [y, ...] -> [(label, y), ...]"""
+def _normalise_axhlines(spec) -> list:
+    """
+    Reference lines for a panel, in any of these forms, -> a list of matplotlib `Axes.axhline` kwargs:
+        {"uniform": 10.8, "unigram": 7.35}           label -> y
+        [10.8, 7.35]                                  y values (labelled with the number)
+        [dict(y=10.8, label="uniform", color="red")]  full matplotlib kwargs per line
+    """
     if not spec:
         return []
     if isinstance(spec, dict):
-        return [(str(k), float(v)) for k, v in spec.items()]
-    return [(f"{float(y):g}", float(y)) for y in spec]
+        return [{"y": float(y), "label": str(label)} for label, y in spec.items()]
+    out = []
+    for item in spec:
+        if isinstance(item, dict):
+            assert "y" in item, f"axhline needs a y: {item!r}"
+            out.append({**item, "y": float(item["y"]), "label": str(item.get("label", f"{float(item['y']):g}"))})
+        else:
+            out.append({"y": float(item), "label": f"{float(item):g}"})
+    return out
 
 
 # --------------------------------------------------------------------------- panel specs
@@ -135,8 +150,8 @@ def _normalise_panel(spec) -> dict:
         "xlim": spec.get("xlim"),
         "ylim": spec.get("ylim"),
         "ylim2": spec.get("ylim2"),
-        "hlines": _normalise_hlines(spec.get("hlines")),  # reference lines on the left axis: {label: y} or [y, ...]
-        "hlines2": _normalise_hlines(spec.get("hlines2")),  # ... and on the right axis
+        "axhlines": _normalise_axhlines(spec.get("axhlines")),  # reference lines on the left axis (see _normalise_axhlines)
+        "axhlines2": _normalise_axhlines(spec.get("axhlines2")),  # ... and on the right axis
     }
 
 
@@ -175,7 +190,7 @@ class _FigureRenderer:
     def __init__(self, panels, xlim, layout, hist=None):
         self.xlim, self.layout = xlim, layout  # xlim = default x range or None; layout = (max_cols, rows, cols, cell_size, dpi, xlabel)
         self.hist = hist if hist is not None else {}
-        self.marks: list[tuple[float, str | None]] = []  # vertical reference lines (x, label), drawn on every panel
+        self.axvlines: list[dict] = []  # vertical reference lines (matplotlib axvline kwargs), drawn on every panel
         self.set_layout(panels)
 
     def set_layout(self, panels):
@@ -203,10 +218,10 @@ class _FigureRenderer:
                 self.lines[name] = line
                 self.hist.setdefault(name, ([], []))
                 handles.append(line)
-            for target, key in ((ax, "hlines"), (ax2, "hlines2")):
-                for label, y in panel[key] if target is not None else []:
-                    handles.append(target.axhline(y, ls="--", lw=1, color="0.45", label=label))
-                    names = names + [label]
+            for target, key in ((ax, "axhlines"), (ax2, "axhlines2")):
+                for kw in panel[key] if target is not None else []:
+                    handles.append(target.axhline(**{**_REF_LINE_STYLE, **kw}))
+                    names = names + [kw["label"]]
             ax.set_title(panel["title"])
             ax.set_xlabel(panel["xlabel"] or xlabel)
             xlim = panel["xlim"] or self.xlim
@@ -228,19 +243,21 @@ class _FigureRenderer:
         for ax in axes[n:]:
             ax.set_visible(False)
         self.axes = list(axes[:n])
-        for x, label in self.marks:
-            self._draw_mark(x, label)
+        for kw in self.axvlines:
+            self._draw_axvline(kw)
         self.fig.tight_layout()
 
-    def add_mark(self, x, label=None):
-        self.marks.append((x, label))
-        self._draw_mark(x, label)
+    def add_axvline(self, kw: dict):
+        self.axvlines.append(kw)
+        self._draw_axvline(kw)
 
-    def _draw_mark(self, x, label):
+    def _draw_axvline(self, kw):
+        label = kw.get("label")
+        style = {**_REF_LINE_STYLE, "linestyle": ":", **{k: v for k, v in kw.items() if k != "label"}}
         for ax in self.axes:
-            ax.axvline(x, ls=":", lw=1, color="0.45")
+            ax.axvline(**style)
             if label:
-                ax.text(x, 0.98, f" {label}", transform=ax.get_xaxis_transform(), va="top", ha="left", fontsize=7, color="0.3", rotation=90)
+                ax.text(kw["x"], 0.98, f" {label}", transform=ax.get_xaxis_transform(), va="top", ha="left", fontsize=7, color="0.3", rotation=90)
 
     def add(self, step, metrics: dict):
         for name, value in metrics.items():
@@ -301,8 +318,8 @@ def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_
             elif item[0] == "layout":
                 renderer.set_layout(item[1])
                 dirty = True
-            elif item[0] == "mark":
-                renderer.add_mark(item[1], item[2])
+            elif item[0] == "axvline":
+                renderer.add_axvline(item[1])
                 dirty = True
             else:
                 renderer.add(item[1], item[2])
@@ -379,7 +396,7 @@ class LivePlot:
         self._record = bool(record)
         self._record_path = record if isinstance(record, str) else None
         self.frames: list[tuple[float, bytes]] = []  # (time, png) of every frame shown, if record=True
-        self.marks: list[tuple[float, str | None]] = []  # vertical reference lines added with mark()
+        self.axvlines: list[dict] = []  # vertical reference lines added with axvline()
         self._t0 = time.monotonic()
         self._done = False
         self._proc = self._renderer = self._inbox = self._outbox = None
@@ -563,34 +580,36 @@ class LivePlot:
         self._placed.update(unplaced)
         self._send_layout()
 
-    def hline(self, y, label=None, metric=None):
+    def axhline(self, y, label=None, *, metric=None, **kwargs):
         """
-        Draw a dashed horizontal reference line, with `label` in the legend: on the axis of `metric`'s
-        panel, or on the left axis of every panel if `metric` is None. E.g. the loss a model must beat:
-        `plot.hline(math.log(d_vocab), "uniform", metric="loss")`.
+        Like matplotlib's `Axes.axhline`: a horizontal reference line at `y` with `label` in the legend,
+        dashed grey by default; any other kwargs (color, linestyle, linewidth, alpha, ...) go to the
+        artist. It goes on the axis of `metric`'s panel, or on the left axis of every panel if `metric`
+        is None. E.g. the loss a model must beat: `plot.axhline(math.log(d_vocab), "uniform", metric="loss")`.
         """
-        label = str(label) if label is not None else f"{float(y):g}"
-        for panel in self.panels:
-            if metric is None:
-                panel["hlines"].append((label, float(y)))
-            elif metric in panel["metrics"]:
-                panel["hlines"].append((label, float(y)))
-            elif metric in panel["secondary"]:
-                panel["hlines2"].append((label, float(y)))
+        line = {**kwargs, "y": float(y), "label": str(label) if label is not None else f"{float(y):g}"}
         if metric is not None and metric not in self._placed:
-            self.data.setdefault(metric, ([], []))  # let the panel be created now so the line has somewhere to go
+            self.data.setdefault(metric, ([], []))  # create the metric's panel now so the line has somewhere to go
             self._extend_layout([metric])
-            return self.hline(y, label, metric)
+        for panel in self.panels:
+            if metric is None or metric in panel["metrics"]:
+                panel["axhlines"].append(line)
+            elif metric in panel["secondary"]:
+                panel["axhlines2"].append(line)
         self._send_layout()
 
-    def mark(self, label=None, x=None):
-        """Draw a dotted vertical line on every panel at the current x (or `x`), e.g. `plot.mark("lr drop")`."""
-        x = self.step if x is None else x
-        self.marks.append((x, label))
+    def axvline(self, x=None, label=None, **kwargs):
+        """
+        Like matplotlib's `Axes.axvline`, on every panel: a vertical line at `x` (default: the current
+        step), dotted grey by default, with `label` written along it; other kwargs go to the artist.
+        E.g. `plot.axvline(label="lr drop")` where the learning rate changes.
+        """
+        line = {**kwargs, "x": float(self.step if x is None else x), "label": label}
+        self.axvlines.append(line)
         if self.mode == "process":
-            self._inbox.put(("mark", x, label))
+            self._inbox.put(("axvline", line))
         elif self.mode == "thread":
-            self._renderer.add_mark(x, label)
+            self._renderer.add_axvline(line)
 
     def _send_layout(self):
         if self.mode == "process":
@@ -656,8 +675,8 @@ class LivePlot:
         self._renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout)
         for name, (xs, ys) in self.data.items():
             self._renderer.hist[name] = (list(xs), list(ys))
-        for x, label in self.marks:
-            self._renderer.add_mark(x, label)
+        for line in self.axvlines:
+            self._renderer.add_axvline(line)
         self.mode = "thread"
 
     def _collect(self, block: bool, timeout: float = 15.0):
