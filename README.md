@@ -87,38 +87,51 @@ Interrupting the cell is safe. Jupyter sends its interrupt to every process the 
 | `cell_size`, `dpi` | size of each panel in inches, and PNG resolution |
 | `record` | `True` keeps every rendered frame in `plot.frames`; a path such as `"run.gif"` also writes an animated GIF at `finish()`. `plot.save_gif(path, speedup=1.0)` does it on demand. Works outside a notebook too. |
 
-For labels or fixed ranges, use a dict instead of a string for that panel:
+## Titles, labels, limits: matplotlib's names
+
+Panels and axes are addressed and configured with the setters you already know from matplotlib, before or during the loop:
 
 ```python
-{"metrics": ["acc"], "ylim": (0, 1), "ylabel": "test accuracy", "xlabel": "epoch"}
+plot = LivePlot(loader, "loss | acc", "lr")
+
+plot["acc"].set_ylim(0, 1)                     # plot[metric] is the y-axis holding that metric (left or right)
+plot["acc"].set_ylabel("test accuracy")
+plot["loss"].axhline(0.1, label="target", color="red")   # extra kwargs go to the matplotlib artist
+
+plot.panels[0].set_title("training")           # a panel: set_title, set_xlabel, set_xlim, set_smooth, axvline
+plot.panels[0].set_xlim(0, 10_000)
+plot.panels[0].axvline(label="lr drop")        # at the current x
+
+plot.set(xlabel="examples", smooth=0.9)        # on the plot itself: every panel, like Axes.set(**kwargs)
 ```
 
-Allowed keys: `title`, `metrics`, `secondary`, `xlabel`, `ylabel`, `ylabel2`, `xlim`, `ylim`, `ylim2`, `axhlines`, `axhlines2`, `smooth`, `yscale`, `yscale2`. Where a key has a matplotlib counterpart it uses matplotlib's name (`ax.set(title=..., xlabel=..., xlim=..., yscale=...)`); the `2` suffix means the right-hand axis.
+`plot[metric]` finds the right-hand axis too, so there is no separate spelling for it; `plot.panels[i].left` / `.right` name the two axes explicitly. Everything on an axis takes matplotlib's name and signature: `set_ylabel`, `set_ylim` (two arguments or a tuple), `set_yscale("log")`, `axhline`, `set(**kwargs)`, and the panel's own setters are reachable from it as they would be on an `Axes`. A setter called mid-run just triggers a re-layout on the next frame.
 
-## Reference lines
-
-The names follow matplotlib. A dashed horizontal line with a legend entry, for the level a curve should reach or beat:
-
-```python
-LivePlot(range(N), {"metrics": ["loss"], "axhlines": {"uniform": math.log(d_vocab), "unigram": 7.35}})
-plot.axhline(500, "solved", metric="return")        # at run time; goes on the axis of that metric's panel
-plot.axvline(label="lr drop")                        # a dotted vertical line on every panel at the current x
-plot.axhline(0.9, "target", metric="acc", color="red", linestyle="-")   # extra kwargs go to the matplotlib artist
-```
-
-In a panel dict, `axhlines` takes `{label: y}`, a list of values, or a list of `axhline` kwargs such as `dict(y=0.9, label="target", color="red")`; `axhlines2` is the same for the right-hand axis.
-
-## Smoothing and log axes
-
-Per-step losses are noisy. `smooth=0.9` on a panel draws each of its curves through wandb's default smoothing, the time-weighted exponential moving average, with the same 0 to 1 weight as wandb's smoothing slider and the raw values faded behind. `LivePlot(..., smooth=0.9)` makes that the default for every panel, and `"smooth": 0` on a panel opts out. `yscale="log"` (and `yscale2` for the right axis) gives a log axis.
-
-```python
-LivePlot(range(N), {"metrics": ["loss"], "smooth": 0.9, "yscale": "log"}, "acc")
-```
+The dict form, `{"metrics": ["acc"], "ylim": (0, 1), ...}`, is still accepted in the layout list but the setters are the intended way.
 
 `plot.figure()` returns a matplotlib Figure of the plot as it stands, built independently of the live renderer, for `fig.savefig(...)`, a title, or any other tweak.
 
 `plot.log` accepts keywords, an explicit step (`plot.log(step, loss=...)`), or a dict (`plot.log(step, {"loss": ...})`). Values can be anything `float()` accepts, including one-element tensors. `plot.data` holds the full history as `{metric: (steps, values)}` and `plot.latest` the most recent value of each.
+
+## Reference lines
+
+Matplotlib's `axhline` / `axvline`, on an axis, a panel, or the whole plot. Horizontal lines get a legend entry; extra kwargs go to the artist.
+
+```python
+plot["loss"].axhline(math.log(d_vocab), "uniform")        # the level a curve should beat
+plot["return"].axhline(500, "solved", color="green")
+plot.axvline(label="lr drop")                             # every panel, at the current x
+plot.panels[1].axvline(2000, "checkpoint", linestyle="-")  # one panel, at a given x
+```
+
+## Smoothing and log axes
+
+Per-step losses are noisy. `set_smooth(0.9)` draws each curve of a panel through wandb's default smoothing, the [time-weighted exponential moving average](https://docs.wandb.ai/models/app/features/panels/line-plot/smoothing), with the same 0 to 1 weight as wandb's smoothing slider and the raw values faded behind. On the plot it applies to every panel; `set_smooth(0)` turns it off. `set_yscale("log")` on an axis, a panel, or the plot gives log axes.
+
+```python
+plot.set_smooth(0.9)
+plot["loss"].set_yscale("log")
+```
 
 ## Credits
 
