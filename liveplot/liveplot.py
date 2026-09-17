@@ -346,14 +346,30 @@ class _FigureRenderer:
 # --------------------------------------------------------------------------- the render process
 
 
-def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_pid):
+def _render_worker(inbox, outbox, parent_pid):
     """
-    Loop: collect messages from `inbox`, redraw at most once per `refresh_seconds`
-    while there is new data, put PNG bytes on `outbox`. Messages: ("data", step,
-    metrics); ("layout", panels) to rebuild the figure; None to finish (draw one
-    last frame, put None, exit). Exits on its own if the parent process is gone.
+    First: import matplotlib and draw a throwaway frame (the slow part of starting up, ~0.6 s), then
+    wait for ("init", panels, refresh_seconds, layout, xlim). Doing it in that order is what lets
+    `warm()` start a process before any plot exists.
+    Then loop: collect messages from `inbox`, redraw at most once per `refresh_seconds` while there is
+    new data, put PNG bytes on `outbox`. Messages: ("data", step, metrics); ("layout", panels) to
+    rebuild the figure; None to finish (draw one last frame, put None, exit). Exits on its own if the
+    parent process is gone.
     """
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Jupyter interrupts the whole process group; not our business
+    _FigureRenderer([_normalise_panel("warm-up")], None, (1, None, None, (2, 2), 50, "step")).render()
+    while True:
+        if os.getppid() != parent_pid:
+            return
+        try:
+            msg = inbox.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        if msg is None:  # a spare that was never used, being shut down
+            return
+        if msg[0] == "init":
+            _, panels, refresh_seconds, layout, xlim = msg
+            break
     renderer = _FigureRenderer(panels, xlim, layout)
     dirty, last_draw, running = False, 0.0, True
     while running:
@@ -393,6 +409,57 @@ def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_
     if dirty:
         outbox.put(renderer.render())  # the final frame
     outbox.put(None)
+
+
+def _spawn_renderer():
+    """Start a render process; returns (process, inbox, outbox). It warms up, then waits for "init"."""
+    # "spawn", never "fork": the notebook process has usually initialised CUDA,
+    # and a forked child inherits a CUDA context it must not touch.
+    ctx = mp.get_context("spawn")
+    inbox, outbox = ctx.Queue(), ctx.Queue()
+    proc = ctx.Process(target=_render_worker, args=(inbox, outbox, os.getpid()), daemon=True)
+    # A spawned child re-runs the parent's __main__ *file* if there is one. In a
+    # notebook there isn't; in an interactive window / `python solutions.py`-style
+    # session `__main__.__file__` points at the whole notebook script, which the
+    # renderer has no use for (it would import torch and build environments just to
+    # draw a plot). Hide it for the duration of start() so the child stays light.
+    main = sys.modules.get("__main__")
+    hidden = {k: main.__dict__.pop(k) for k in ("__file__", "__cached__") if main is not None and k in main.__dict__}
+    try:
+        proc.start()
+    finally:
+        if main is not None:
+            main.__dict__.update(hidden)
+    return proc, inbox, outbox
+
+
+_spare = None  # a render process started by warm(), waiting to be adopted by the next LivePlot
+_keep_warm = False  # set by warm(): replace the spare each time a plot takes it
+
+
+def warm():
+    """
+    Keep a render process ready, so every `LivePlot` from now on shows its first frame almost
+    immediately instead of after the ~0.6 s it takes a fresh process to import matplotlib. Call it
+    once, in a setup cell. Each plot adopts the waiting process and a replacement starts in the
+    background. Optional: without it, each plot just takes that extra moment to appear. The spare is
+    an idle process that exits with the kernel.
+    """
+    global _spare, _keep_warm
+    _keep_warm = True
+    if _spare is None or not _spare[0].is_alive():
+        _spare = _spawn_renderer()
+
+
+def _take_renderer():
+    """The warm spare if there is a live one (starting its replacement), else a freshly spawned process."""
+    global _spare
+    spare, _spare = _spare, None
+    if _keep_warm:
+        _spare = _spawn_renderer()  # starting a process returns in milliseconds; it warms up in the background
+    if spare is not None and spare[0].is_alive():
+        return spare
+    return _spawn_renderer()
 
 
 def _terminate(proc, inbox):
@@ -751,28 +818,8 @@ class LivePlot:
         return self._specs or [_normalise_panel({"title": "waiting for data…", "metrics": ["_"]})]
 
     def _start_process(self):
-        # "spawn", never "fork": the notebook process has usually initialised CUDA,
-        # and a forked child inherits a CUDA context it must not touch.
-        ctx = mp.get_context("spawn")
-        self._inbox, self._outbox = ctx.Queue(), ctx.Queue()
-        self._proc = ctx.Process(
-            target=_render_worker,
-            args=(self._panels_or_placeholder(), self._inbox, self._outbox, self.refresh_seconds, self._layout,
-                  self.x_range, os.getpid()),
-            daemon=True,
-        )
-        # A spawned child re-runs the parent's __main__ *file* if there is one. In a
-        # notebook there isn't; in an interactive window / `python solutions.py`-style
-        # session `__main__.__file__` points at the whole notebook script, which the
-        # renderer has no use for (it would import torch and build environments just to
-        # draw a plot). Hide it for the duration of start() so the child stays light.
-        main = sys.modules.get("__main__")
-        hidden = {k: main.__dict__.pop(k) for k in ("__file__", "__cached__") if main is not None and k in main.__dict__}
-        try:
-            self._proc.start()
-        finally:
-            if main is not None:
-                main.__dict__.update(hidden)
+        self._proc, self._inbox, self._outbox = _take_renderer()  # a warm() spare if there is one
+        self._inbox.put(("init", self._panels_or_placeholder(), self.refresh_seconds, self._layout, self.x_range))
         weakref.finalize(self, _terminate, self._proc, self._inbox)  # dropped without finish() -> no leak
         # Frames are displayed by this thread as soon as the renderer produces them, so a loop that
         # logs rarely (or is busy in a long step) still sees each frame when it is ready rather than

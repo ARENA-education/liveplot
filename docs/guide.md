@@ -58,6 +58,17 @@ The training thread only appends numbers (about 40 µs per `log`). A separate re
 
 Interrupting the cell is safe. Jupyter sends its interrupt to every process the kernel started; the render process ignores it, so you get a frozen plot with `plot.data` intact. A plot that is dropped without `finish()` shuts its process down when garbage collected, and the process exits by itself if the notebook kernel dies.
 
+## Starting instantly
+
+A plot's first frame waits for its render process to start, which is mostly a fresh Python importing matplotlib: about 0.6 s. Call `liveplot.warm()` once, in a setup cell, and a render process is kept ready in the background, so every plot from then on appears as soon as its first point is logged.
+
+```python
+import liveplot
+liveplot.warm()
+```
+
+It is optional and off by default; the cost is one idle process that exits with the kernel.
+
 ## Options
 
 | | |
