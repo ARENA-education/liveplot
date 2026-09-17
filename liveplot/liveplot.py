@@ -66,7 +66,7 @@ behind.
 
 How it works: the training thread only appends numbers (~40 us per `log`). A
 separate *render process* owns the matplotlib figure, redraws it at most once per
-`refresh_seconds` (default 1.0; points arriving in between are batched into the
+`refresh_seconds` (default 0.2; points arriving in between are batched into the
 next frame; 0 means redraw on every arrival, as fast as rendering allows), and
 sends back PNG bytes that get swapped into a fixed output cell. The output is a plain image, so it behaves the same in Jupyter, Colab, VS
 Code and Cursor: no widgets, no CDN, no JavaScript. The progress bar is tqdm
@@ -598,7 +598,7 @@ class LivePlot:
         initial: int | float = 0,
         unit: str = "step",
         unit_scale: int | float = 1,
-        refresh_seconds: float = 1.0,
+        refresh_seconds: float = 0.2,
         max_cols: int | None = 3,
         rows: int | None = None,
         cols: int | None = None,
