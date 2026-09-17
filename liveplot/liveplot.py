@@ -766,7 +766,7 @@ class LivePlot:
             if self._record_path and self.frames:
                 self.save_gif(self._record_path)
 
-    def save_gif(self, path, speedup: float = 1.0, max_frame_ms: int = 1000, hold_last_ms: int = 1500, colors: int = 64):
+    def save_gif(self, path, speedup: float = 1.0, max_frame_ms: int = 1000, hold_last_ms: int = 1500, colors: int = 256):
         """
         Write the recorded frames (needs `record=True`) as an animated GIF that replays at the real
         pace of the run divided by `speedup`, with no single frame shown longer than `max_frame_ms`.
@@ -778,11 +778,23 @@ class LivePlot:
 
         if not self.frames:
             raise ValueError("nothing recorded: create the plot with record=True")
-        images = [Image.open(io.BytesIO(png)).convert("P", palette=Image.ADAPTIVE, colors=colors) for _, png in self.frames]
+        images = [Image.open(io.BytesIO(png)).convert("RGB") for _, png in self.frames]
+        # A GIF has ONE palette for the whole animation. Quantising each frame to its own adaptive
+        # palette (the obvious thing) corrupts the colours of every frame whose palette differs from
+        # the first one's. So build a single palette from a sample of frames and map every frame to it.
+        # 256 colours (GIF's maximum) costs a few percent in file size over 64 for a line chart and
+        # keeps anti-aliased edges and legend swatches true.
+        w, h = images[0].size
+        sample = sorted({0, len(images) - 1, *range(0, len(images), max(1, len(images) // 6))})[:8]
+        sheet = Image.new("RGB", (w, h * len(sample)))
+        for k, i in enumerate(sample):
+            sheet.paste(images[i], (0, k * h))
+        palette = sheet.quantize(colors=colors, method=Image.Quantize.MEDIANCUT)
+        images = [im.quantize(palette=palette, dither=Image.Dither.NONE) for im in images]
         times = [t for t, _ in self.frames]
         durations = [min(int(1000 * (b - a) / speedup), max_frame_ms) for a, b in zip(times, times[1:])] + [hold_last_ms]
         durations = [max(d, 20) for d in durations]  # GIF viewers ignore very short delays
-        images[0].save(path, save_all=True, append_images=images[1:], duration=durations, loop=0, optimize=True)
+        images[0].save(path, save_all=True, append_images=images[1:], duration=durations, loop=0, optimize=False)
         return path
 
     def __enter__(self):

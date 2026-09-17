@@ -249,6 +249,15 @@ def test_record_and_save_gif(tmp_path):
     im = Image.open(gif)
     # Pillow merges identical consecutive frames (the warm-up ones are), accumulating their durations
     assert im.is_animated and 3 <= im.n_frames <= len(p.frames)
+    # colour fidelity: every GIF frame must be a faithful copy of one of the recorded PNGs (a per-frame
+    # palette bug used to scramble the colours of frames whose palette differed from the first one's)
+    import io
+    from PIL import ImageChops, ImageStat
+    sources = [Image.open(io.BytesIO(png)).convert("RGB") for _, png in p.frames]
+    for k in range(im.n_frames):
+        im.seek(k)
+        err = min(max(ImageStat.Stat(ImageChops.difference(im.convert("RGB"), src)).mean) for src in sources)
+        assert err < 8, f"GIF frame {k} differs from every recorded frame (mean channel error {err:.1f})"
     q = LivePlot(progress=False)
     with pytest.raises(ValueError):
         q.save_gif(tmp_path / "empty.gif")
