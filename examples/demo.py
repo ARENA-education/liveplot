@@ -1,12 +1,25 @@
 # %%
 """
 liveplot tour. A cell-separated file: run it cell by cell in the VS Code / Cursor interactive
-window (or paste the cells into a notebook) to watch each plot update live. Running it as a plain
-script also works, it just prints instead of drawing (except the recording cell, which renders).
-
-    pip install git+https://github.com/ARENA-education/liveplot.git
+window, open it in Colab (the README has the link: CI turns this file into a notebook on the
+`demo` branch), or run it as a plain script, which prints instead of drawing (except the
+recording cell, which renders).
 """
 
+# Setup: on Colab, install liveplot; anywhere else it is already installed.
+import subprocess
+import sys
+
+try:
+    import google.colab  # noqa: F401
+
+    IN_COLAB = True
+except ImportError:
+    IN_COLAB = False
+if IN_COLAB:
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "git+https://github.com/ARENA-education/liveplot.git"], check=True)
+
+# %%
 import math
 import random
 import time
