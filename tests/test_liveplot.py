@@ -59,12 +59,12 @@ def test_off_mode_discovery_and_log_forms():
     p.log(1, {"loss": 0.5}, acc=0.1)
     p.log(acc=0.2)  # nothing wrapped: x stays at the last explicit step, 1
     assert p.data == {"loss": ([0, 1], [1.0, 0.5]), "acc": ([1, 1], [0.1, 0.2])}
-    assert [pn["metrics"] for pn in p.panels] == [["loss", "acc"]], "no layout given: everything on one panel"
+    assert [pn["metrics"] for pn in p._specs] == [["loss", "acc"]], "no layout given: everything on one panel"
     p.finish(); p.finish()  # idempotent
 
     q = LivePlot("loss", "a | b")
     q.log(0, loss=1, a=2, b=3, extra=4)
-    assert [(pn["metrics"], pn["secondary"]) for pn in q.panels] == [(["loss"], []), (["a"], ["b"]), (["extra"], [])]
+    assert [(pn["metrics"], pn["secondary"]) for pn in q._specs] == [(["loss"], []), (["a"], ["b"]), (["extra"], [])]
 
 
 def test_x_axis_follows_tqdm_counting():
@@ -165,7 +165,7 @@ def test_process_mode_end_to_end(fake_notebook):
     assert len(fake_notebook.frames) >= n_frames0 + 3 and all(f[:8] == PNG for f in fake_notebook.frames)
     assert not p._proc.is_alive()
     assert len(p.data["loss"][0]) == n_warmup + step and p.last_png == fake_notebook.frames[-1]
-    assert [pn["metrics"] for pn in p.panels] == [["loss"], ["acc"], ["lr"]]
+    assert [pn["metrics"] for pn in p._specs] == [["loss"], ["acc"], ["lr"]]
 
 
 def test_interrupt_inside_with_block_is_clean(fake_notebook):

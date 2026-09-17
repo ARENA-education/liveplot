@@ -50,10 +50,10 @@ def test_axhline_and_axvline_off_mode():
     p.axhline(0.2, "target", metric="loss", color="green")
     p.axhline(0.9, metric="acc")  # label defaults to the value
     p.axhline(0.0)  # no metric: left axis of every panel
-    assert p.panels[0]["axhlines"] == [{"color": "green", "y": 0.2, "label": "target"}, {"y": 0.0, "label": "0"}]
-    assert p.panels[0]["axhlines2"] == [{"y": 0.9, "label": "0.9"}]
+    assert p._specs[0]["axhlines"] == [{"color": "green", "y": 0.2, "label": "target"}, {"y": 0.0, "label": "0"}]
+    assert p._specs[0]["axhlines2"] == [{"y": 0.9, "label": "0.9"}]
     p.axhline(1e-3, "final lr", metric="lr")  # metric not logged yet: creates its panel
-    assert p.panels[1]["metrics"] == ["lr"] and p.panels[1]["axhlines"] == [{"y": 0.001, "label": "final lr"}]
+    assert p._specs[1]["metrics"] == ["lr"] and p._specs[1]["axhlines"] == [{"y": 0.001, "label": "final lr"}]
     p.log(7, loss=0.5)
     p.axvline(label="lr drop")  # x defaults to the current step
     p.axvline(9, "later", linewidth=2)

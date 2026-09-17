@@ -88,11 +88,15 @@ if MAIN:
 # 3. Nested loops (epochs x batches). Create the plot once and wrap the INNER loop with plot(...):
 #    the count, and so the x-axis, continues across epochs and you get one tqdm bar per epoch,
 #    exactly as with tqdm. `total` is in items, like tqdm's, and fixes the x range up front.
-#    A dict instead of a string pins the accuracy axis to [0, 1] and labels it.
+#    Titles, labels and limits use matplotlib's own setter names, addressed by metric or by panel.
 
 if MAIN:
     epochs, loader = 3, [None] * 60
-    plot = LivePlot("loss", {"metrics": ["acc"], "ylim": (0, 1), "ylabel": "test accuracy"}, total=epochs * len(loader))
+    plot = LivePlot("loss", "acc", total=epochs * len(loader))
+    plot["acc"].set_ylim(0, 1)                  # plot[metric] is the y-axis holding that metric
+    plot["acc"].set_ylabel("test accuracy")
+    plot.panels[0].set_title("training loss")
+    plot.set(xlabel="batches")                  # every panel, like Axes.set(**kwargs)
     for epoch in range(epochs):
         for batch in plot(loader, desc=f"epoch {epoch}"):
             plot.log(loss=math.exp(-plot.n / 60) + 0.05 * random.random())
@@ -113,6 +117,9 @@ if MAIN:
                 plot.log(step, acc=min(1.0, step / 300))
             if step >= 200:
                 plot.log(step, lr=1e-3 * (400 - step) / 200)
+            if step == 200:
+                plot.axvline(label="lr decay starts")     # a vertical line on every panel, at the current x
+                plot["acc"].axhline(0.9, "target")        # a horizontal reference line on acc's axis
             slow()
 
 # %%
