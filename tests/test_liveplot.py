@@ -152,17 +152,17 @@ def test_process_mode_end_to_end(fake_notebook):
     with LivePlot("loss", {"metrics": ["acc"], "ylim": (0, 1)}, total=10_000, refresh_seconds=0.2) as p:
         assert p.mode == "process"
         wait_for_first_frame(p, fake_notebook)
-        n_warmup = len(p.data["loss"][0])  # points logged while waiting for the child
-        costs, step, t_end = [], 0, time.monotonic() + 2.5  # 2.5 s of logging: several frames' worth
-        while time.monotonic() < t_end:
-            t0 = time.perf_counter()
+        n_warmup, n_frames0 = len(p.data["loss"][0]), len(fake_notebook.frames)
+        costs, step, t_end = [], 0, time.monotonic() + 120  # log until three more frames have been shown
+        while len(fake_notebook.frames) < n_frames0 + 3 and time.monotonic() < t_end:  # (a frame can take
+            t0 = time.perf_counter()                                                      # seconds on a loaded box)
             p.log(step, loss=math.exp(-step / 100), acc=min(step / 300, 1.0), lr=1e-3)  # lr is discovered
             costs.append(time.perf_counter() - t0)
             step += 1
             time.sleep(0.002)
     costs.sort()
     assert costs[len(costs) // 2] < 0.001, "median log() must stay well under a millisecond"
-    assert len(fake_notebook.frames) >= 3 and all(f[:8] == PNG for f in fake_notebook.frames)
+    assert len(fake_notebook.frames) >= n_frames0 + 3 and all(f[:8] == PNG for f in fake_notebook.frames)
     assert not p._proc.is_alive()
     assert len(p.data["loss"][0]) == n_warmup + step and p.last_png == fake_notebook.frames[-1]
     assert [pn["metrics"] for pn in p.panels] == [["loss"], ["acc"], ["lr"]]
