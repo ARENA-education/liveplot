@@ -26,9 +26,13 @@ import time
 
 import numpy as np
 
+import liveplot
 from liveplot import LivePlot
 
 MAIN = __name__ == "__main__"
+
+if MAIN:
+    liveplot.warm()  # optional: keeps a render process ready, so each plot below appears immediately
 
 
 def slow(seconds=0.01):
