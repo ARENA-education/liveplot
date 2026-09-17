@@ -1,0 +1,11 @@
+site_name: liveplot
+site_description: Live training curves in Jupyter, Colab and VS Code, at (almost) no cost to the training loop
+site_url: https://arena-education.github.io/liveplot/
+repo_url: https://github.com/ARENA-education/liveplot
+docs_dir: docs
+nav:
+  - Home: index.md
+  - API: api.md
+  - Examples: examples.md
+theme:
+  name: mkdocs

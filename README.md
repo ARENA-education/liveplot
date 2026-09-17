@@ -4,6 +4,8 @@ Live training curves in Jupyter, Colab and the VS Code / Cursor interactive wind
 
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ARENA-education/liveplot/blob/demo/examples/demo.ipynb) [![tests](https://github.com/ARENA-education/liveplot/actions/workflows/tests.yml/badge.svg)](https://github.com/ARENA-education/liveplot/actions/workflows/tests.yml)
 
+Documentation: **[arena-education.github.io/liveplot](https://arena-education.github.io/liveplot/)** (this README, the API, and the examples; built from the `.md` files on every push).
+
 Try it in Colab with the badge above: that notebook is [`examples/demo.py`](examples/demo.py), a cell-by-cell tour of the features, which CI converts with jupytext and publishes to the `demo` branch on every push to `main`.
 
 ![training loss every step, eval loss and accuracy every 50 steps, on one panel with two y-axes](docs/demo.gif)
