@@ -21,6 +21,10 @@ LivePlot([iterable,] *panels, total=None, initial=0, unit="step", unit_scale=1,
 | `progress`, `desc` | switch the tqdm bars off, or give the single-loop form's bar a description. |
 | `record` | `True` keeps every rendered frame in `plot.frames`; a path such as `"run.gif"` also writes an animated GIF at `finish()`. |
 
+## `liveplot.warm()`
+
+Keep a render process ready so every later plot shows its first frame immediately instead of after ~0.6 s. Call once in a setup cell; optional.
+
 ## Logging
 
 | call | meaning |
