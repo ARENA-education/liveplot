@@ -147,6 +147,12 @@ def _parse_panel_string(spec: str) -> dict:
     return {"metrics": left.split(), "secondary": right.split()}
 
 
+def _check_smooth(weight):
+    """A smoothing weight is wandb's: in [0, 1), where 0 means off. None means 'no opinion'."""
+    assert weight is None or 0 <= weight < 1, f"smooth must be a weight in [0, 1), got {weight!r}"
+    return weight
+
+
 def _normalise_panel(spec) -> dict:
     if isinstance(spec, str):
         spec = _parse_panel_string(spec)
@@ -170,7 +176,7 @@ def _normalise_panel(spec) -> dict:
         "axhlines": _normalise_axhlines(spec.get("axhlines")),  # reference lines on the left axis (see _normalise_axhlines)
         "axhlines2": _normalise_axhlines(spec.get("axhlines2")),  # ... and on the right axis
         "axvlines": [dict(kw) for kw in spec.get("axvlines") or []],  # vertical lines on this panel only (axvline kwargs)
-        "smooth": spec.get("smooth"),  # TWEMA weight in [0, 1); None = plot-wide default; 0 = off
+        "smooth": _check_smooth(spec.get("smooth")),  # TWEMA weight in [0, 1); None = plot-wide default; 0 = off
         "yscale": spec.get("yscale", "linear"),  # "linear" or "log", left axis
         "yscale2": spec.get("yscale2", "linear"),  # ... right axis
     }
@@ -556,8 +562,7 @@ class Panel:
 
     def set_smooth(self, weight):
         """wandb-style smoothing weight in [0, 1) for every curve on this panel; 0 turns it off."""
-        assert 0 <= weight < 1, f"smooth must be a weight in [0, 1), got {weight!r}"
-        self._set("smooth", weight)
+        self._set("smooth", _check_smooth(weight))
 
     def axvline(self, x=None, label=None, **kwargs):
         """Like `Axes.axvline`, on this panel only: a vertical line at `x` (default: the current step)."""
@@ -622,7 +627,7 @@ class LivePlot:
             x-axis (see module docstring).
         """
         iterable, specs = (args[0], args[1:]) if args and not isinstance(args[0], (str, dict)) else (None, args)
-        self.smooth = smooth  # default TWEMA weight for panels that don't set their own (wandb's smoothing slider)
+        self.smooth = _check_smooth(smooth)  # default TWEMA weight for panels that don't set their own (wandb's smoothing slider)
         self._panel_defaults: dict = {}  # plot-level set_*() values, applied to panels created later
         self._specs = [self._with_defaults(_normalise_panel(p)) for p in specs]
         self._explicit_layout = bool(self._specs)
@@ -738,8 +743,7 @@ class LivePlot:
 
     def set_smooth(self, weight):
         """wandb-style smoothing weight in [0, 1) for every panel (and the default for later ones)."""
-        assert 0 <= weight < 1, f"smooth must be a weight in [0, 1), got {weight!r}"
-        self.smooth = weight
+        self.smooth = _check_smooth(weight)
         self._set_all("smooth", weight)
 
     def set(self, **kwargs):
@@ -799,15 +803,27 @@ class LivePlot:
         kwargs = {"unit": self.unit}
         if self.unit_scale != 1:
             kwargs["unit_scale"] = self.unit_scale  # the bar shows the same numbers as the x-axis
-        if "total" not in tqdm_kwargs:
-            try:
-                kwargs["total"] = len(it)
-            except TypeError:
-                pass
+        try:
+            kwargs["total"] = len(it)
+        except TypeError:
+            if self.total is not None and it is self._iterable:
+                # the single-loop form over an iterable with no len(): the plot knows the total. A wrapped
+                # inner loop must not borrow it -- the plot-wide total spans every epoch, not this one.
+                kwargs["total"] = self.total
+        if self.initial:
+            # ... and it starts where the x-axis does. tqdm counts raw items and scales them for
+            # display, so the offset goes in as items and `total` has to grow to match; `self.n`
+            # keeps a wrapped inner loop's bar lined up with the x-axis across epochs.
+            offset = self.initial / self.unit_scale + self.n
+            offset = int(offset) if offset == int(offset) else offset  # keep the bar's counts whole when they are
+            kwargs["initial"] = offset
+            if kwargs.get("total") is not None:
+                kwargs["total"] += offset
+        kwargs.update(tqdm_kwargs)  # the caller's kwargs win over the ones we derived
         # No iterable is given to tqdm: we drive it with update() ourselves, so that the closing
         # line of the bar still shows the final postfix (tqdm closes a wrapped iterable before we
         # could write it).
-        return tqdm(**kwargs, **tqdm_kwargs)
+        return tqdm(**kwargs)
 
     # -- use ----------------------------------------------------------------------
 
@@ -900,8 +916,11 @@ class LivePlot:
         elif not self._specs:
             self._specs.append(self._with_defaults(_normalise_panel({"metrics": unplaced})))
         else:
-            self._specs[0]["metrics"].extend(unplaced)
-            self._specs[0]["title"] = " / ".join(self._specs[0]["metrics"])
+            spec = self._specs[0]
+            was_auto = spec["title"] == " / ".join(spec["metrics"] + spec["secondary"])  # a title nobody chose
+            spec["metrics"].extend(unplaced)
+            if was_auto:  # a title set with set_title() survives a newly discovered metric
+                spec["title"] = " / ".join(spec["metrics"] + spec["secondary"])
         self._placed.update(unplaced)
         self._send_layout()
 
@@ -1018,12 +1037,25 @@ class LivePlot:
     # -- plumbing -----------------------------------------------------------------
 
     def _fall_back_to_thread(self, why):
+        # Drawing is never worth an exception in someone's training loop: whatever killed the render
+        # process will usually kill a renderer built here too (a bad panel spec, a missing backend),
+        # so if this fails, say so once and carry on collecting into plot.data.
+        try:
+            renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout)
+            for name, (xs, ys) in self.data.items():
+                renderer.hist[name] = (list(xs), list(ys))
+            for line in self.axvlines:
+                renderer.add_axvline(line)
+        except Exception as e:  # noqa: BLE001
+            self.mode = "off"
+            warnings.warn(
+                f"LivePlot: {why}, and drawing on the training thread failed too "
+                f"({type(e).__name__}: {e}); collecting into plot.data only.",
+                stacklevel=3,
+            )
+            return
         warnings.warn(f"LivePlot: {why}; rendering on the training thread from now on.", stacklevel=3)
-        self._renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout)
-        for name, (xs, ys) in self.data.items():
-            self._renderer.hist[name] = (list(xs), list(ys))
-        for line in self.axvlines:
-            self._renderer.add_axvline(line)
+        self._renderer = renderer
         self.mode = "thread"
 
     def _show(self, png: bytes):
