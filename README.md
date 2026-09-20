@@ -63,10 +63,10 @@ It follows tqdm: the plot counts items consumed and never looks at their values.
 ## Install
 
 ```
-pip install git+https://github.com/ARENA-education/liveplot.git
+pip install "liveplot[notebook] @ git+https://github.com/ARENA-education/liveplot.git"
 ```
 
-Only `matplotlib` is required. `ipython` is needed for the live display and `tqdm` for the bar; any notebook has both, and without them the plot silently just collects `plot.data`.
+`matplotlib` is the only hard requirement (`numpy` and `pillow`, which the smoother and `save_gif` use, come with it). The `notebook` extra adds `ipython` for the live display and `tqdm` for the bar; any notebook already has both, so plain `pip install git+...` is fine there, and without them the plot silently just collects `plot.data`.
 
 ## How it works
 

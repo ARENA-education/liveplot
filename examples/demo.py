@@ -17,7 +17,7 @@ try:
 except ImportError:
     IN_COLAB = False
 if IN_COLAB:
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "git+https://github.com/ARENA-education/liveplot.git"], check=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "liveplot[notebook] @ git+https://github.com/ARENA-education/liveplot.git"], check=True)
 
 # %%
 import math

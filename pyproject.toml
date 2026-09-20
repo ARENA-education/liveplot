@@ -10,11 +10,16 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "ARENA-education" }]
-dependencies = ["matplotlib>=3.6"]
+# Everything heavy is imported lazily, inside the function that needs it: `import liveplot`
+# pulls in nothing third-party at all, and with none of these installed a LivePlot still
+# collects into plot.data. These are what the drawing path imports directly -- numpy for the
+# smoother and pillow for save_gif() come with matplotlib anyway, but we import them, so we
+# say so rather than relying on matplotlib's dependency list staying as it is.
+dependencies = ["matplotlib>=3.6", "numpy>=1.22", "pillow>=9"]
 
 [project.optional-dependencies]
-notebook = ["ipython>=8.0"]
-test = ["pytest"]
+notebook = ["ipython>=8.0", "tqdm>=4.60"]  # the live display, and the progress bar
+test = ["pytest", "ipython>=8.0", "tqdm>=4.60"]
 
 [project.urls]
 Homepage = "https://github.com/ARENA-education/liveplot"
