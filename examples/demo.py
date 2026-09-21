@@ -179,3 +179,59 @@ if MAIN:
 if MAIN:
     xs, losses = plot.data["loss"]
     print(f"{len(xs)} loss points, x from {xs[0]} to {xs[-1]} examples; final eval acc {plot.latest['eval_acc']:.3f}")
+
+# %%
+# 9. Images beside curves: LivePlot.subplots mirrors plt.subplots, and a panel can hold a picture
+#    instead of lines. `ax.plot("name", ...)` says which metrics live on an axis (matplotlib spells
+#    the same idea `ax.plot("name", data=d)`); `ax.imshow(tensor)` draws a batch as a grid and
+#    replaces it on every call. This is the shape a GAN training loop wants: loss curves updating
+#    every step, generated samples every so often, in one figure.
+#
+#    A batch is tiled for you: `rows=` or `cols=` infers the other, and values are scaled to the
+#    full range unless you fix it with vmin/vmax -- worth doing here, since a generator that ends
+#    in tanh always produces [-1, 1] and a fixed range keeps the black point still between frames.
+
+
+def fake_generator(step, rng, n=8, size=24):
+    """Stand-in for a generator: blobs that sharpen as `step` grows, in tanh range like a real one."""
+    y, x = np.mgrid[0:size, 0:size] / size
+    out = np.empty((n, 3, size, size))
+    for i in range(n):
+        cx, cy, sharp = rng.random(), rng.random(), 0.02 + 0.5 / (1 + step / 40)
+        blob = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / sharp)
+        out[i] = np.stack([blob, blob * (0.3 + 0.7 * cx), blob * (0.3 + 0.7 * cy)])
+    return out * 2 - 1  # [-1, 1], as a tanh output would be
+
+
+if MAIN:
+    rng = np.random.default_rng(0)
+    plot, (ax_loss, ax_samples) = LivePlot.subplots(1, 2, total=400, figsize=(11, 4))
+    ax_loss.plot("lossD", "lossG")
+    ax_loss.twinx().plot("D(x)")  # matplotlib's own spelling for a right-hand axis
+    ax_samples.set_title("generator samples")
+
+    for step in plot(range(400)):
+        plot.log(lossD=1 / (1 + step / 50) + 0.05 * rng.random(),
+                 lossG=0.4 + 0.3 * rng.random(),
+                 **{"D(x)": 0.5 + 0.3 / (1 + step / 80)})
+        if step % 25 == 0:
+            ax_samples.imshow(fake_generator(step, rng), rows=2, vmin=-1, vmax=1)
+        slow()
+    plot.finish()
+
+# %%
+# 10. One image on its own, overwritten in place: plot.imshow() makes the panel on first use. The
+#     accepted layouts are (H, W), (C, H, W), (H, W, C), (B, H, W), (B, C, H, W) and (B, H, W, C).
+#     (3, H, W) and (4, H, W) are the ambiguous ones -- one colour image, or that many grayscale? --
+#     and they raise, telling you which `channels=` to pass.
+
+if MAIN:
+    plot = LivePlot()
+    for step in range(40):
+        plot.imshow(np.random.default_rng(step).random((6, 1, 28, 28)), rows=2)  # replaces the last
+        slow(0.05)
+    plot.finish()
+    try:
+        plot.imshow(np.zeros((3, 8, 8)))
+    except ValueError as e:
+        print(e)
