@@ -146,7 +146,28 @@ plot.finish()
 `ax.plot("lossD", data=d)` form with the data source implicit -- the plot is the source, filled in
 later by `log()`. `axes` follows matplotlib's squeeze rules: one panel for 1x1, a flat list for a
 single row or column, a 2-d grid otherwise (`axes[0][1]` and `axes[0, 1]` both work, and
-`axes.flat` walks it). `figsize` is the whole figure in inches, as matplotlib means it.
+`axes.flat` walks it). `figsize` is the whole figure in inches, as matplotlib means it, and
+`width_ratios` / `height_ratios` are matplotlib's too: `width_ratios=(1, 1.25)` gives a wide grid
+of samples more room. `ax.legend(**kwargs)` goes to `Axes.legend`, so a crowded legend can move
+off the curves: `ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncols=3)`.
+
+A training loop that already drives its own bar, one for the whole run rather than one per epoch,
+keeps its shape: `plot.update()` and `plot.set_description(...)` are tqdm's manual-mode methods,
+and the first `update()` opens the bar below the figure.
+
+```python
+plot, (ax_loss, ax_samples) = LivePlot.subplots(1, 2, total=epochs * len(loader), width_ratios=(1, 1.25))
+for epoch in range(epochs):
+    plot.set_description(f"epoch {epoch}")
+    for imgs, _ in loader:
+        plot.log(lossD=..., lossG=...)
+        plot.update()
+plot.finish()
+```
+
+[`examples/dcgan_synthetic.py`](examples/dcgan_synthetic.py) is the whole thing on a fake DCGAN run
+laid out like ARENA's [0.5] trainer: smoothed losses with `ln 4` / `ln 2` reference lines and the
+discriminator's outputs on a right-hand axis, beside ten CelebA faces coming out of the noise.
 
 For a single picture with no curves, `plot.imshow(x)` makes the panel on first use and every later
 call replaces it:

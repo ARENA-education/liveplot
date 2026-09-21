@@ -132,7 +132,7 @@ import warnings
 import weakref
 
 _PANEL_KEYS = {"title", "metrics", "secondary", "xlabel", "ylabel", "ylabel2", "xlim", "ylim", "ylim2", "axhlines", "axhlines2",
-               "axvlines", "smooth", "yscale", "yscale2", "kind", "cmap"}
+               "axvlines", "smooth", "yscale", "yscale2", "kind", "cmap", "legend"}
 _REF_LINE_STYLE = {"linestyle": "--", "linewidth": 1, "color": "0.45"}  # defaults for axhline / axvline artists
 
 
@@ -204,6 +204,7 @@ def _normalise_panel(spec, allow_empty: bool = False) -> dict:
         "yscale2": spec.get("yscale2", "linear"),  # ... right axis
         "kind": kind,  # "curve" (metric lines) or "image" (one picture, overwritten in place)
         "cmap": spec.get("cmap", "gray"),  # image panels only; matplotlib ignores it for RGB data
+        "legend": dict(spec.get("legend") or {}),  # Axes.legend kwargs (loc, ncols, bbox_to_anchor, ...)
     }
 
 
@@ -276,13 +277,14 @@ class _FigureRenderer:
         from matplotlib.backends.backend_agg import FigureCanvasAgg
         from matplotlib.figure import Figure
 
-        max_cols, rows_opt, cols_opt, cell_size, dpi, xlabel = self.layout
+        max_cols, rows_opt, cols_opt, cell_size, dpi, xlabel, *rest = self.layout
+        gridspec_kw = rest[0] if rest else {}  # width_ratios / height_ratios, from subplots()
         n = len(panels)
         rows, cols = _grid_shape(n, max_cols, rows_opt, cols_opt)
         self.fig = Figure(figsize=(cell_size[0] * cols, cell_size[1] * rows))
         FigureCanvasAgg(self.fig)
         self.dpi = dpi
-        axes = self.fig.subplots(rows, cols, squeeze=False).flatten()
+        axes = self.fig.subplots(rows, cols, squeeze=False, gridspec_kw=gridspec_kw).flatten()
         palette = matplotlib.rcParams["axes.prop_cycle"].by_key()["color"]
         self.lines = {}
         self.raw_lines = {}  # metric -> faded line of the unsmoothed values, on smoothed panels
@@ -329,7 +331,8 @@ class _FigureRenderer:
                 ax.set_ylim(*panel["ylim"])
             self.fixed[ax] = (xlim is not None, panel["ylim"] is not None)
             if names and names != ["_"]:  # (nothing logged yet, or the "waiting for data" placeholder)
-                ax.legend(handles, names, loc="best", fontsize=8)  # every panel gets a legend (reference lines included)
+                # every panel gets a legend (reference lines included); Panel.legend(**kwargs) moves or styles it
+                ax.legend(handles, names, **{"loc": "best", "fontsize": 8, **panel["legend"]})
             if ax2 is not None:
                 ax.set_ylabel(panel["ylabel"] or ", ".join(panel["metrics"]))
                 ax2.set_ylabel(panel["ylabel2"] or ", ".join(panel["secondary"]))
@@ -415,7 +418,7 @@ def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_
     """
     Loop: collect messages from `inbox`, redraw at most once per `refresh_seconds`
     while there is new data, put PNG bytes on `outbox`. Messages: ("data", step,
-    metrics); ("layout", panels) to rebuild the figure; None to finish (draw one
+    metrics); ("layout", panels, layout) to rebuild the figure; None to finish (draw one
     last frame, put None, exit). Exits on its own if the parent process is gone.
     """
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Jupyter interrupts the whole process group; not our business
@@ -447,6 +450,7 @@ def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_
             if item is None:
                 running = False
             elif item[0] == "layout":
+                renderer.layout = item[2]  # grid options can change after start (subplots' width_ratios)
                 renderer.set_layout(item[1])
                 dirty = True
             elif item[0] == "axvline":
@@ -590,6 +594,9 @@ class _Axis:
     def set_title(self, label):
         self.panel.set_title(label)
 
+    def legend(self, **kwargs):
+        self.panel.legend(**kwargs)
+
     def set_xlabel(self, xlabel):
         self.panel.set_xlabel(xlabel)
 
@@ -673,6 +680,14 @@ class Panel:
 
     def set_title(self, label):
         self._set("title", str(label))
+
+    def legend(self, **kwargs):
+        """
+        Like `Axes.legend`, for the panel's one legend (both y-axes' curves and its reference lines):
+        kwargs go to matplotlib, e.g. `legend(loc="upper left", ncols=3)`, or
+        `legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncols=3)` to put it under the panel.
+        """
+        self._set("legend", kwargs)
 
     def set_xlabel(self, xlabel):
         self._set("xlabel", str(xlabel))
@@ -795,6 +810,7 @@ class LivePlot:
         self._placed = {n for p in self._specs for n in p["metrics"] + p["secondary"]}
         self._layout = (max_cols, rows, cols, cell_size, dpi, unit)
         self._iterable, self._bar, self._desc, self._progress = iterable, None, desc, progress
+        self._own_bar = None  # the bar update() opened, which finish() closes
         if total is None and iterable is not None:
             try:
                 total = len(iterable)
@@ -858,7 +874,7 @@ class LivePlot:
 
     @classmethod
     def subplots(cls, nrows: int = 1, ncols: int = 1, *, figsize=None, squeeze: bool = True,
-                 iterable=None, **kwargs):
+                 width_ratios=None, height_ratios=None, iterable=None, **kwargs):
         """
         Like `plt.subplots`, for a live plot: returns `(plot, axes)` with a fixed nrows x ncols grid
         of empty panels, which you then fill with `ax.plot("loss", ...)` or `ax.imshow(tensor)`.
@@ -869,7 +885,9 @@ class LivePlot:
 
         `axes` follows matplotlib's squeeze rules: one panel for 1x1, a flat list for a single row
         or column, a 2-d grid otherwise. `figsize` is the whole figure in inches, as matplotlib
-        means it (liveplot's own `cell_size` is per panel). Every other keyword goes to `LivePlot`.
+        means it (liveplot's own `cell_size` is per panel). `width_ratios` / `height_ratios` are
+        matplotlib's too, e.g. `width_ratios=(1, 1.3)` to give an image panel more room. Every other
+        keyword goes to `LivePlot`.
         """
         assert nrows >= 1 and ncols >= 1, f"need at least a 1x1 grid, got {nrows}x{ncols}"
         kwargs.setdefault("rows", nrows)
@@ -877,6 +895,11 @@ class LivePlot:
         if figsize is not None:
             kwargs["cell_size"] = (figsize[0] / ncols, figsize[1] / nrows)
         plot = cls(*([] if iterable is None else [iterable]), **kwargs)
+        gridspec_kw = {k: list(v) for k, v in (("width_ratios", width_ratios), ("height_ratios", height_ratios)) if v is not None}
+        if gridspec_kw:
+            assert len(gridspec_kw.get("width_ratios", [0] * ncols)) == ncols, "width_ratios needs one entry per column"
+            assert len(gridspec_kw.get("height_ratios", [0] * nrows)) == nrows, "height_ratios needs one entry per row"
+            plot._layout = (*plot._layout[:6], gridspec_kw)
         plot._specs.extend(
             plot._with_defaults(_normalise_panel({"metrics": []}, allow_empty=True)) for _ in range(nrows * ncols)
         )
@@ -1053,6 +1076,32 @@ class LivePlot:
                 if ours:
                     bar.close()
 
+    def update(self, n=1):
+        """
+        Like tqdm's `update`, for a loop you drive yourself: advance the count, and so the x-axis, by
+        `n` items. The first call opens a bar of `total` items below the plot, as `tqdm(total=...)`
+        would, and `finish()` closes it. One bar for a whole multi-epoch run:
+
+            plot = LivePlot(total=epochs * len(loader))
+            for epoch in range(epochs):
+                for batch in loader:
+                    plot.log(loss=train_step(batch))
+                    plot.update()
+            plot.finish()
+        """
+        self._wrapping = True
+        if self._bar is None and self._own_bar is None:
+            self._own_bar = self._bar = self._make_bar(None, {"desc": self._desc} if self._desc else {})
+        self.n += n
+        if self._own_bar is not None:
+            self._own_bar.update(n)
+
+    def set_description(self, desc=None, refresh=True):
+        """Like tqdm's `set_description`: the text before the bar (e.g. f"epoch {epoch}")."""
+        self._desc = desc
+        if self._bar is not None:
+            self._bar.set_description(desc, refresh=refresh)
+
     def __iter__(self):
         if self._iterable is None:
             raise TypeError("nothing to iterate: use LivePlot(iterable, ...), or plot(iterable) inside your loop")
@@ -1192,8 +1241,9 @@ class LivePlot:
 
     def _send_layout(self):
         if self.mode == "process":
-            self._inbox.put(("layout", self._specs))
+            self._inbox.put(("layout", self._specs, self._layout))
         elif self.mode == "thread":
+            self._renderer.layout = self._layout
             self._renderer.set_layout(self._specs)
 
     def figure(self):
@@ -1233,6 +1283,9 @@ class LivePlot:
                 if self._proc.is_alive():  # e.g. still importing matplotlib on a very busy machine
                     self._proc.terminate()
                     self._proc.join(timeout=2.0)
+            if self._own_bar is not None:
+                self._own_bar.set_postfix(self.latest, refresh=False)
+                self._own_bar.close()
             if self._record_path and self.frames:
                 self.save_gif(self._record_path)
 

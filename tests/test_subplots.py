@@ -200,3 +200,42 @@ def test_process_mode_curves_beside_images(fake_notebook):
     assert not plot._proc.is_alive()
     assert len(plot._images) == 1 and plot._images[1].shape == (22, 22, 3)
     assert [s["kind"] for s in plot._specs] == ["curve", "image"]
+
+
+def test_width_ratios_and_legend_placement():
+    """matplotlib's own names: subplots(width_ratios=...) and ax.legend(**kwargs)."""
+    plot, (ax_loss, ax_img) = LivePlot.subplots(1, 2, width_ratios=(1, 2), progress=False)
+    ax_loss.plot("lossD", "lossG")
+    ax_loss.twinx().plot("D(x)")
+    ax_loss.legend(loc="upper center", ncols=3)
+    ax_img.imshow(rng_images())
+    plot.log(0, lossD=1.0, lossG=0.5, **{"D(x)": 0.5})
+    fig = plot.figure()
+    axes = [ax for ax in fig.axes if ax.get_visible()]
+    ax_curves, ax_image = axes[0], axes[1]
+    assert ax_image.get_subplotspec().get_gridspec().get_width_ratios() == [1, 2]
+    legend = ax_curves.get_legend()
+    assert [t.get_text() for t in legend.get_texts()] == ["lossD", "lossG", "D(x)"], "one legend, both axes' curves"
+    assert legend._ncols == 3 and legend._loc == 9, "kwargs reached Axes.legend (9 = upper center)"
+    with pytest.raises(AssertionError, match="one entry per column"):
+        LivePlot.subplots(1, 2, width_ratios=(1, 2, 3), progress=False)
+
+
+def test_update_drives_one_bar_across_epochs():
+    """tqdm's manual mode: plot.update() advances the count (the x-axis) and one bar for the run."""
+    pytest.importorskip("tqdm")
+    plot = LivePlot(total=6)
+    bars = set()
+    for epoch in range(2):
+        plot.set_description(f"epoch {epoch}")
+        for _ in range(3):
+            plot.log(loss=1.0)
+            plot.update()
+            bars.add(id(plot._bar))
+    plot.finish()
+    assert len(bars) == 1 and plot._own_bar.n == 6 and plot._own_bar.total == 6
+    assert plot._own_bar.desc.startswith("epoch 1")
+    assert plot.data["loss"][0] == [0, 1, 2, 3, 4, 5], "x counts updates, like a wrapped loop"
+    quiet = LivePlot(total=3, progress=False)
+    quiet.update(); quiet.update(2)
+    assert quiet._bar is None and quiet.step == 3, "progress=False: the count moves, no bar"
