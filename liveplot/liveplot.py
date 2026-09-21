@@ -281,7 +281,16 @@ class _FigureRenderer:
         gridspec_kw = rest[0] if rest else {}  # width_ratios / height_ratios, from subplots()
         n = len(panels)
         rows, cols = _grid_shape(n, max_cols, rows_opt, cols_opt)
-        self.fig = Figure(figsize=(cell_size[0] * cols, cell_size[1] * rows))
+        self.panels = panels
+        fig_width = cell_size[0] * cols
+        # One row with pictures in it, and no width_ratios chosen: size each image panel to its picture
+        # at the row's height, and give the curves what is left, so neither is framed in white space.
+        self.fitted_aspects = None
+        if rows == 1 and "width_ratios" not in gridspec_kw and any(p["kind"] == "image" for p in panels):
+            widths, self.fitted_aspects = self._fitted_widths(panels, cell_size, fig_width)
+            fig_width = sum(widths)
+            gridspec_kw = {**gridspec_kw, "width_ratios": widths + [widths[-1]] * (cols - n)}
+        self.fig = Figure(figsize=(fig_width, cell_size[1] * rows))
         FigureCanvasAgg(self.fig)
         self.dpi = dpi
         axes = self.fig.subplots(rows, cols, squeeze=False, gridspec_kw=gridspec_kw).flatten()
@@ -352,8 +361,29 @@ class _FigureRenderer:
         for index in self.images:  # a re-layout rebuilds the figure; put the pictures back
             if index in self.image_axes:
                 self._draw_image(index)
-        self.fig.tight_layout()
+        self.fig.tight_layout(pad=0.6)
 
+    def _fitted_widths(self, panels, cell_size, fig_width):
+        """
+        Panel widths in inches for a one-row figure: an image panel is as wide as its picture is at the
+        row's height (less room for the title), the curve panels share the rest of the figure's width,
+        or keep their own if the pictures leave too little. Also returns the aspect ratio each image
+        panel was sized for, so a picture of another shape can trigger a re-layout.
+        """
+        cell_w, cell_h = cell_size
+        aspects = {}
+        for i, panel in enumerate(panels):
+            if panel["kind"] == "image":
+                arr = self.images.get(i, (None,))[0]
+                aspects[i] = None if arr is None else arr.shape[1] / arr.shape[0]
+        image_h = cell_h - 0.55  # the title above, and tight_layout's margins
+        widths = [0.2 + image_h * aspects[i] if aspects.get(i) else cell_w for i in range(len(panels))]
+        curves = [i for i, panel in enumerate(panels) if panel["kind"] != "image"]
+        if curves:
+            spare = (fig_width - sum(widths[i] for i in aspects)) / len(curves)
+            for i in curves:
+                widths[i] = max(spare, 0.6 * cell_w)
+        return widths, aspects
     def add_axvline(self, kw: dict):
         self.axvlines.append(kw)
         self._draw_axvline(kw)
@@ -374,6 +404,8 @@ class _FigureRenderer:
 
     def _draw_image(self, index: int):
         arr, x = self.images[index]
+        if self.fitted_aspects is not None and self.fitted_aspects.get(index) != arr.shape[1] / arr.shape[0]:
+            return self.set_layout(self.panels)  # a picture of a new shape: re-fit the panel widths (draws it too)
         ax = self.image_axes[index]
         if x is not None:  # say how old the picture is: it is only redrawn when imshow is called
             title, when = self.panel_titles[index], f"{self.layout[5]} {x:g}"
@@ -644,13 +676,16 @@ class Panel:
         """Like `ax.plot("name", data=...)`: put these metrics on the left axis. See `_Axis.plot`."""
         return self.left.plot(*metrics)
 
-    def imshow(self, x, *, rows=None, cols=None, griddim=None, vmin=None, vmax=None,
-               scale_each=False, channels=None, cmap="gray", padding=2, pad_value=0):
+    def imshow(self, x, *, rows=None, cols=None, griddim=None, vmin=None, vmax=None, scale_each=False,
+               channels=None, cmap="gray", padding=0, pad_value=0, max_images=64, max_cols=8):
         """
         Like `Axes.imshow`, but for a whole batch and repeatable: show `x` on this panel, replacing
         whatever was there. A batch is tiled into a grid -- `rows` or `cols` alone infers the other,
-        `griddim=(rows, cols)` fixes both (padding with blanks, or dropping the tail). Images are
-        `padding` pixels of `pad_value` apart, as in make_grid. The title shows the step it was drawn at.
+        `griddim=(rows, cols)` fixes both (padding with blanks, or dropping the tail). With neither,
+        the grid is near-square (3 -> 2x2, 5 -> 3x2, 8 -> 3x3, 64 -> 8x8), at most `max_cols` wide.
+        Only the first `max_images` are shown, with a warning (`max_images=None` for all of them).
+        Images sit edge to edge; `padding` puts that many pixels of `pad_value` between them. The
+        title shows the step the image was drawn at.
 
         Accepts (H, W), (C, H, W), (H, W, C), (B, H, W), (B, C, H, W) and (B, H, W, C); (3, H, W)
         and (4, H, W) are ambiguous and raise, telling you which `channels=` to pass.
@@ -666,8 +701,9 @@ class Panel:
         assert not (spec["metrics"] or spec["secondary"]), \
             f"panel {self._index} is showing curves ({' '.join(spec['metrics'] + spec['secondary'])}); " \
             f"use a different panel for the image"
-        arr = to_grid(x, rows=rows, cols=cols, griddim=griddim, vmin=vmin, vmax=vmax,
-                      scale_each=scale_each, channels=channels, padding=padding, pad_value=pad_value)
+        arr = to_grid(x, rows=rows, cols=cols, griddim=griddim, vmin=vmin, vmax=vmax, scale_each=scale_each,
+                      channels=channels, padding=padding, pad_value=pad_value, max_images=max_images,
+                      max_cols=max_cols)
         if spec["kind"] != "image" or spec["cmap"] != cmap:
             spec["kind"], spec["cmap"] = "image", cmap
             self._plot._send_layout()
@@ -1228,7 +1264,7 @@ class LivePlot:
         self._send_layout()
 
     def _send_image(self, index: int, arr):
-        x = self.step
+        x = self.step if self._wrapping or self.latest else None  # a step in the title only once there are steps
         self._images[index], self._image_steps[index] = arr, x
         if self.mode == "process":
             self._inbox.put(("image", index, arr, x))

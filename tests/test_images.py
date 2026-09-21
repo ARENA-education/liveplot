@@ -1,5 +1,7 @@
 """Shape reading, grid tiling and value scaling for `imshow` -- all of `_images.py`, no figure."""
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -13,10 +15,10 @@ def test_accepted_layouts():
     assert to_grid(np.zeros((64, 64, 3))).shape == (64, 64, 3), "channels last"
     assert to_grid(np.zeros((64, 64, 4))).shape == (64, 64, 4)
     assert to_grid(np.zeros((3, 64, 64)), channels="first").shape == (64, 64, 3)
-    assert to_grid(np.zeros((5, 8, 8))).shape == (32, 22), "5 grayscale -> near-square 3x2, one blank, 2px gaps"
-    assert to_grid(np.zeros((4, 1, 8, 8))).shape == (22, 22), "(B, 1, H, W) -> 2x2"
-    assert to_grid(np.zeros((4, 3, 8, 8))).shape == (22, 22, 3), "(B, C, H, W), torch's layout"
-    assert to_grid(np.zeros((4, 8, 8, 3))).shape == (22, 22, 3), "(B, H, W, C), channels last"
+    assert to_grid(np.zeros((5, 8, 8))).shape == (24, 16), "5 grayscale -> near-square 3x2, one blank"
+    assert to_grid(np.zeros((4, 1, 8, 8))).shape == (16, 16), "(B, 1, H, W) -> 2x2, edge to edge"
+    assert to_grid(np.zeros((4, 3, 8, 8))).shape == (16, 16, 3), "(B, C, H, W), torch's layout"
+    assert to_grid(np.zeros((4, 8, 8, 3))).shape == (16, 16, 3), "(B, H, W, C), channels last"
 
 
 def test_the_ambiguous_shapes_raise_and_say_how_to_fix_it():
@@ -107,11 +109,32 @@ def test_pad_value():
 
 def test_padding_between_images():
     """make_grid's layout: `padding` pixels around every image; one image alone gets no border."""
-    g = to_grid(np.ones((2, 1, 3, 3), np.float32), griddim=(1, 2), vmin=0, vmax=1, pad_value=7)
+    g = to_grid(np.ones((2, 1, 3, 3), np.float32), griddim=(1, 2), vmin=0, vmax=1, padding=2, pad_value=7)
     assert g.shape == (3 + 4, 2 * 3 + 6)
     assert (g[2:5, 2:5] == 255).all() and (g[2:5, 7:10] == 255).all(), "the images"
     assert (g[:2] == 7).all() and (g[:, 5:7] == 7).all(), "the border and the gap between"
-    assert to_grid(np.ones((3, 3))).shape == (3, 3)
+    assert to_grid(np.ones((3, 3)), padding=2).shape == (3, 3)
+    assert to_grid(np.ones((2, 1, 3, 3)), griddim=(1, 2)).shape == (3, 6), "the default is edge to edge"
+
+
+def test_default_grid_shapes():
+    """Near-square, rows first: what "just plot this batch" gives, capped at 8 columns."""
+    shapes = {n: grid_shape(n, None, None) for n in (1, 2, 3, 4, 5, 8, 9, 10, 16, 64)}
+    assert shapes == {1: (1, 1), 2: (2, 1), 3: (2, 2), 4: (2, 2), 5: (3, 2), 8: (3, 3), 9: (3, 3),
+                      10: (4, 3), 16: (4, 4), 64: (8, 8)}
+    assert grid_shape(100, None, None) == (13, 8), "never wider than max_cols=8 ..."
+    assert grid_shape(100, None, None, max_cols=None) == (10, 10), "... unless told otherwise"
+    assert grid_shape(100, None, 20) == (5, 20), "an explicit cols is not capped"
+
+
+def test_max_images_truncates_with_a_warning():
+    many = np.zeros((1000, 1, 2, 2), np.float32)
+    with pytest.warns(UserWarning, match="first 64 of 1000"):
+        assert to_grid(many).shape == (16, 16), "64 images, 8x8"
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert to_grid(many, max_images=None).shape == (125 * 2, 8 * 2), "all 1000, 8 wide: asked for, so no warning"
+        assert to_grid(many[:64]).shape == (16, 16), "exactly max_images: no warning"
 
 
 def test_bfloat16_tensors():

@@ -3,7 +3,7 @@
 A synthetic DCGAN run, laid out like `DCGANTrainer` in ARENA's [0.5] VAEs & GANs day, to show what
 liveplot looks like on that training loop without a GPU. Nothing is trained: the losses are made up
 to behave the way the course describes (lossD starting at ln 4 and falling, lossG starting at ln 2
-and rising, D(x) and D(G(z)) pulling apart from 1/2), and the "generator" returns ten real CelebA
+and rising, D(x) and D(G(z)) pulling apart from 1/2), and the "generator" returns nine real CelebA
 faces behind noise that fades as training goes on.
 
 Run it cell by cell in the VS Code / Cursor interactive window or Jupyter to see it live: the loss
@@ -11,7 +11,7 @@ curves and the samples side by side in one output, with a tqdm bar underneath. R
 (`python examples/dcgan_synthetic.py`) and nothing is drawn on screen, but it records the run to
 `dcgan_synthetic.gif`.
 
-Needs torch and Pillow, and fetches ten CelebA faces (about 70 kB, cached in ~/.cache/liveplot)
+Needs torch and Pillow, and fetches nine CelebA faces (about 60 kB, cached in ~/.cache/liveplot)
 through Hugging Face's dataset viewer, not the 1.4 GB dataset.
 
 The parts to copy into the real trainer are marked `# liveplot:`.
@@ -37,7 +37,7 @@ CELEB_IMAGE_SIZE = 64
 
 
 # %%
-# The data: ten CelebA faces, prepared as the course's `get_dataset("CELEB")` does (resize the short
+# The data: a few CelebA faces, prepared as the course's `get_dataset("CELEB")` does (resize the short
 # side to 64, centre-crop to 64x64, uint8), then mapped to [-1, 1] like TANH_RANGE_TRANSFORM.
 
 
@@ -84,7 +84,7 @@ class SyntheticDCGANTrainer:
     def __init__(self, args: DCGANArgs):
         self.args = args
         self.gen = t.Generator().manual_seed(args.seed)
-        self.faces = tanh_range(celeba_faces(10))  # what a well-trained netG(self.fixed_noise) would give
+        self.faces = tanh_range(celeba_faces(9))  # what a well-trained netG(self.fixed_noise) would give
         self.fixed_noise = t.randn(self.faces.shape, generator=self.gen)  # the fake generator's own noise
         self.total_steps = args.epochs * args.batches_per_epoch
         self.d_state = t.zeros(2)  # slowly wandering offsets that make D(x), D(G(z)) look like a real run
@@ -114,14 +114,14 @@ class SyntheticDCGANTrainer:
         output = quality * self.faces + (1 - quality) * self.fixed_noise
         # Clip values to make the visualization clearer (as the course does)
         output = output.clamp(output.quantile(0.01), output.quantile(0.99))
-        self.ax_samples.imshow(output, rows=2)  # liveplot: replaces LiveImage.update / wandb.Image
+        self.ax_samples.imshow(output)  # liveplot: replaces LiveImage.update / wandb.Image (9 -> a 3x3 grid)
 
     def train(self, **plot_kwargs) -> LivePlot:
         self.step = 0
         # liveplot: one figure for the curves and the samples, and the tqdm bar underneath it (this
         # replaces `self.live_image = LiveImage()` and `progress_bar = tqdm(total=...)`)
         self.plot, (ax_loss, self.ax_samples) = LivePlot.subplots(
-            1, 2, total=self.total_steps, figsize=(12, 4), width_ratios=(1, 1.25), **plot_kwargs
+            1, 2, total=self.total_steps, figsize=(12, 4.5), **plot_kwargs
         )
         ax_loss.plot("lossD", "lossG")
         ax_loss.set_smooth(0.6)  # per-batch GAN losses are noisy: wandb's smoothing, raw values faded behind

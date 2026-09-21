@@ -86,6 +86,7 @@ def test_image_panel_and_curve_panel_do_not_mix():
 def test_plot_level_imshow_is_the_whole_of_liveimage():
     plot = LivePlot(progress=False)
     plot.imshow(rng_images(seed=1))
+    assert plot._image_steps[0] is None, "nothing logged or wrapped yet: no step to put in the title"
     first = plot._images[0].copy()
     plot.imshow(rng_images(seed=2))
     assert [s["kind"] for s in plot._specs] == ["image"], "one image panel, reused"
@@ -139,7 +140,7 @@ def test_figure_includes_the_image():
     assert sum(len(ax.images) for ax in fig.axes) == 1
     assert sum(len(ax.get_lines()) for ax in fig.axes) == 1
     img = next(im for ax in fig.axes for im in ax.images)
-    assert img.get_array().shape == (22, 22, 3), "two rows of two 8x8 RGB images, 2px gaps"
+    assert img.get_array().shape == (16, 16, 3), "two rows of two 8x8 RGB images"
     assert img.axes.get_title() == "step 4", "an untitled image panel says when it was drawn"
     ax_img.set_title("samples")
     assert next(im for ax in plot.figure().axes for im in ax.images).axes.get_title() == "samples (step 4)"
@@ -198,7 +199,7 @@ def test_process_mode_curves_beside_images(fake_notebook):
     plot.finish()
     assert len(fake_notebook.frames) > n and all(f[:8] == PNG for f in fake_notebook.frames)
     assert not plot._proc.is_alive()
-    assert len(plot._images) == 1 and plot._images[1].shape == (22, 22, 3)
+    assert len(plot._images) == 1 and plot._images[1].shape == (16, 16, 3)
     assert [s["kind"] for s in plot._specs] == ["curve", "image"]
 
 
@@ -239,3 +240,23 @@ def test_update_drives_one_bar_across_epochs():
     quiet = LivePlot(total=3, progress=False)
     quiet.update(); quiet.update(2)
     assert quiet._bar is None and quiet.step == 3, "progress=False: the count moves, no bar"
+
+
+def test_image_panels_are_sized_to_their_picture():
+    """One row, no width_ratios: the image panel is as wide as its picture needs, the curves get the rest."""
+    plot, (ax_loss, ax_img) = LivePlot.subplots(1, 2, figsize=(12, 4), progress=False)
+    ax_loss.plot("loss")
+    plot.log(0, loss=1.0)
+    ax_img.imshow(rng_images(n=9, c=3))  # 3x3 of 8x8: square
+    fig = plot.figure()
+    assert fig.get_size_inches()[0] == pytest.approx(12), "figsize is kept"
+    ax_curves, ax_image = [ax for ax in fig.axes if ax.get_visible()]
+    fig.canvas.draw()
+    box = ax_image.get_window_extent()
+    assert box.width == pytest.approx(box.height, rel=0.02), "the picture fills its panel: no side margins"
+    assert ax_curves.get_window_extent().width > 1.5 * box.width, "the curves take the room the picture doesn't need"
+    ax_img.imshow(rng_images(n=8, c=3), griddim=(2, 4))  # a wide picture: the panel re-fits
+    box = [ax for ax in plot.figure().axes if ax.get_visible()][1]
+    box.figure.canvas.draw()
+    extent = box.get_window_extent()
+    assert extent.width == pytest.approx(2 * extent.height, rel=0.02)

@@ -119,11 +119,12 @@ def _to_uint8(a, vmin, vmax, scale_each: bool):
     return (np.clip(a, 0.0, 1.0) * 255).round().astype(np.uint8)
 
 
-def grid_shape(n: int, rows: int | None, cols: int | None, griddim=None) -> tuple[int, int]:
+def grid_shape(n: int, rows: int | None, cols: int | None, griddim=None, max_cols: int | None = 8) -> tuple[int, int]:
     """
     Rows x cols for `n` images. `griddim=(rows, cols)` fixes both; one of `rows` / `cols` infers
-    the other; with neither, the near-square rule liveplot already uses for its panel grid. Unlike
-    the panel grid, the result need not fit: the caller pads short and drops long.
+    the other; with neither, the near-square rule liveplot already uses for its panel grid (3 -> 2x2,
+    5 -> 3x2, 8 -> 3x3, 64 -> 8x8), at most `max_cols` wide. Unlike the panel grid, the result need
+    not fit: the caller pads short and drops long.
     """
     if griddim is not None:
         assert rows is None and cols is None, "give griddim, or rows/cols, not both"
@@ -131,6 +132,9 @@ def grid_shape(n: int, rows: int | None, cols: int | None, griddim=None) -> tupl
     if rows is None and cols is None:
         rows = math.ceil(math.sqrt(n))
         cols = math.ceil(n / rows)
+        if max_cols is not None and cols > max_cols:
+            cols = max_cols
+            rows = math.ceil(n / cols)
     elif rows is None:
         rows = math.ceil(n / cols)
     elif cols is None:
@@ -157,15 +161,28 @@ def _tile(a, rows: int, cols: int, pad_value: int, padding: int):
     return out
 
 
-def to_grid(x, *, rows=None, cols=None, griddim=None, vmin=None, vmax=None,
-            scale_each=False, channels=None, padding=2, pad_value=0):
+def to_grid(x, *, rows=None, cols=None, griddim=None, vmin=None, vmax=None, scale_each=False,
+            channels=None, padding=0, pad_value=0, max_images: int | None = 64, max_cols: int | None = 8):
     """
     A tensor -> one uint8 image, (H, W) for grayscale or (H, W, 3|4), ready for `Axes.imshow`.
     Runs on the calling thread: tiling 10 64x64 RGB samples costs ~0.2 ms and quarters what the
     render process has to unpickle, and a CUDA tensor has to come back to the host here anyway.
+
+    Only the first `max_images` of a batch are shown (with a warning), since a grid of 1000
+    thumbnails is rarely what anyone meant; `max_images=None` shows them all. Images sit edge to
+    edge; `padding` pixels of `pad_value` between them if you want gaps, as make_grid draws them.
     """
+    import warnings
+
     a = _as_bhwc(_as_array(x), channels)
-    rows, cols = grid_shape(a.shape[0], rows, cols, griddim)
+    if max_images is not None and a.shape[0] > max_images:
+        warnings.warn(
+            f"imshow: showing the first {max_images} of {a.shape[0]} images "
+            f"(slice the batch yourself, or pass max_images=None to show them all)",
+            stacklevel=3,
+        )
+        a = a[:max_images]
+    rows, cols = grid_shape(a.shape[0], rows, cols, griddim, max_cols)
     a = a[: rows * cols]  # drop before scaling: an image nobody can see must not set the range
     a = _to_uint8(a, vmin, vmax, scale_each)
     grid = _tile(a, rows, cols, pad_value, padding)
