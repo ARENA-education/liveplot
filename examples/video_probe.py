@@ -33,8 +33,8 @@ RUN = {
     "3_patch_js": False,  # passed: JupyterLab + Chrome, Colab
     "4_stacked": False,  # passed: JupyterLab + Chrome, Colab
     "5_stress": False,  # passed: JupyterLab + Chrome (also throttled to 10 Mbit/s), Colab. Turn on for a throttled run
-    "6_throughput": True,  # Colab (DevTools "Fast 4G"): first point lost; throttle didn't reach Colab's outputs
-    "7_bursts": True,
+    "6_throughput": False,  # passed: JupyterLab + Chrome, Colab (~31 Mbit/s; DevTools throttling doesn't reach Colab)
+    "7_bursts": False,  # JupyterLab: never loses one. Colab: keeps only the newest of back-to-back updates
 }
 if os.environ.get("LIVEPLOT_PROBE_ALL"):
     RUN = dict.fromkeys(RUN, True)
