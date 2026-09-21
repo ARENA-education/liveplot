@@ -13,6 +13,8 @@
 # | 4 | the no-script fallback: two stacked outputs updated independently |
 # | 5 | big video deliveries don't stall the curves (two plots at once) |
 # | 6 | throughput calibration: how long payloads of known size take to arrive |
+# | 7 | whether back-to-back updates of one output get lost |
+# | 8 | whether a slow link makes the plot fall further behind, and whether a send budget stops it |
 #
 # Tests that have already passed on the frontends we care about are switched off in `RUN` below, so
 # a re-run only does the new ones. Set `LIVEPLOT_PROBE_ALL=1` in the kernel's environment to run all.
@@ -35,6 +37,7 @@ RUN = {
     "5_stress": False,  # passed: JupyterLab + Chrome (also throttled to 10 Mbit/s), Colab. Turn on for a throttled run
     "6_throughput": False,  # passed: JupyterLab + Chrome, Colab (~31 Mbit/s; DevTools throttling doesn't reach Colab)
     "7_bursts": False,  # JupyterLab: never loses one. Colab: keeps only the newest of back-to-back updates
+    "8_backlog": True,
 }
 if os.environ.get("LIVEPLOT_PROBE_ALL"):
     RUN = dict.fromkeys(RUN, True)
@@ -438,3 +441,69 @@ def test_bursts():
 
 if RUN["7_bursts"]:
     test_bursts()
+
+# %% [markdown]
+# ## Test 8: does a slow link make the plot fall further and further behind?
+# The kernel sends updates 5 times a second for 10 seconds, sized so they total 1.3x the link speed
+# assumed in PROBE_LINK_MBPS (incompressible data, a stand-in for curve images). Each carries the kernel's send time; the browser measures each
+# arrival's delay *relative to the first one* (so the two machines' clocks needn't agree). Phase A sends
+# everything; phase B skips an update whenever the last 2 seconds' bytes would exceed a budget, so the
+# newest state goes out and stale ones never do. On a link slower than the send rate, A's delay should
+# grow steadily and B's should stay flat. Run it on a throttled connection to see the difference;
+# unthrottled, both stay flat.
+
+# %%
+PROBE_LINK_MBPS = 10  # the connection we're designing for; throttle to this to see phase A fall behind
+PROBE_BUDGET_MBPS = 0.4 * PROBE_LINK_MBPS  # phase B's send budget, with room left for videos and everything else
+
+
+def test_backlog():
+    uid = uuid.uuid4().hex[:8]
+    display(HTML(f"""<div style="font-family:monospace;font-size:12px">
+  <div id="lag-{uid}">delay: waiting</div></div>{result_line(uid, "8_backlog")}
+<script>{WATCH_JS}
+(function() {{
+  window["lp_{uid}"] = {{A: [], B: [], final: false}};
+  var timer = setInterval(function() {{
+    var s = window["lp_{uid}"], out = {{}};
+    ["A", "B"].forEach(function(ph) {{
+      var d = s[ph];
+      if (!d.length) return;
+      var rel = d.map(function(q) {{ return q[1] - d[0][1]; }});
+      out[ph] = {{arrived: d.length, sent: s["sent_" + ph], delay_growth_ms: Math.round(rel[rel.length - 1]),
+                  max_delay_ms: Math.round(Math.max.apply(null, rel))}};
+    }});
+    document.getElementById("lag-{uid}").innerText = "delay relative to the first update: " + JSON.stringify(out);
+    var ok = out.B && out.B.delay_growth_ms < 1000;
+    lpResult(document.getElementById("res-{uid}"), "8_backlog", s.final ? (ok ? "PASS" : "FAIL") : "running", out);
+    if (s.final) clearInterval(timer);
+  }}, 250);
+}})();
+</script>"""))
+    box = display(HTML("<i style='font-size:10px'>mailbox</i>"), display_id=True)
+
+    def post(js):
+        box.update(HTML(f'<i style="font-size:10px">mailbox</i><script>(function() {{ var s = window["lp_{uid}"]; if (!s) return; {js} }})();</script>'))
+
+    for phase, budget in (("A", None), ("B", PROBE_BUDGET_MBPS)):
+        sent, window_ = 0, []  # window_: (time, bytes) of recent sends, for the budget
+        raw = int(1.3 * PROBE_LINK_MBPS * 1e6 / 8 * 0.2 * 3 / 4)  # bytes per update, before base64
+        for i in range(50):
+            payload = base64.b64encode(os.urandom(raw)).decode()
+            now = time.time()
+            window_ = [(t, b) for t, b in window_ if now - t < 2.0]
+            if budget is not None and sum(b for _, b in window_) + len(payload) > budget * 1e6 / 8 * 2.0:
+                time.sleep(0.2)
+                continue  # skip: the next update carries the newest state anyway
+            post(f'var x = "{payload}"; s.{phase}.push([{i}, Date.now() - {now * 1000:.0f}]);')
+            window_.append((now, len(payload)))
+            sent += 1
+            time.sleep(0.2)
+        post(f"s.sent_{phase} = {sent};")
+        time.sleep(20)  # let whatever is still in the pipe arrive before the next phase
+    post("s.final = true;")
+    time.sleep(1)
+
+
+if RUN["8_backlog"]:
+    test_backlog()

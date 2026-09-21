@@ -79,15 +79,15 @@ def main():
                 browser = p.chromium.launch(**launch)
                 browser_name = "Chromium " + browser.version + " (no H.264)"
             page = browser.new_page(viewport={"width": 1400, "height": 1100})
-            if args.throttle_mbps:
+            page.goto(f"http://127.0.0.1:{port}/lab/tree/{nb.name}")
+            page.wait_for_selector(".jp-Notebook", timeout=60000)
+            time.sleep(5)
+            if args.throttle_mbps:  # only now: JupyterLab's own few-MB page would take minutes on a slow link
                 cdp = page.context.new_cdp_session(page)
                 cdp.send("Network.enable")
                 rate = args.throttle_mbps * 1e6 / 8  # bytes per second
                 cdp.send("Network.emulateNetworkConditions", {"offline": False, "latency": args.latency_ms,
                                                               "downloadThroughput": rate, "uploadThroughput": rate})
-            page.goto(f"http://127.0.0.1:{port}/lab/tree/{nb.name}")
-            page.wait_for_selector(".jp-Notebook", timeout=60000)
-            time.sleep(5)
             page.click(".jp-Notebook")
             page.keyboard.press("Escape")
             page.keyboard.press("Control+Shift+c")  # command palette -> Run All Cells
