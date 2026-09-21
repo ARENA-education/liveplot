@@ -84,6 +84,11 @@ every frame), or `scale_each=True` scales each image alone, as make_grid does.
 Unlike matplotlib, which ignores vmin/vmax for colour data and clips it to [0, 1],
 these apply to colour images too.
 
+Videos loop in a panel until the next one replaces it, e.g. an RL agent's recent
+rollouts: `ax.video(frames, fps=50)`, with wandb.Video's layouts, (T, C, H, W) or a
+batch (B, T, C, H, W) tiled into a grid frame by frame. The figure is then sent as
+an animated PNG, still one image in one output cell (see _video.py).
+
 How it works: the training thread only appends numbers (~40 us per `log`). A
 separate *render process* owns the matplotlib figure, redraws it at most once per
 `refresh_seconds` (default 1.0; points arriving in between are batched into the
@@ -269,6 +274,7 @@ class _FigureRenderer:
         self.xlim, self.layout = xlim, layout  # xlim = default x range or None; layout = (max_cols, rows, cols, cell_size, dpi, xlabel)
         self.hist = hist if hist is not None else {}
         self.images = dict(images) if images else {}  # panel index -> (the uint8 array it is showing, its x)
+        self.videos = {}  # panel index -> the video it is looping (see add_video); images[index] holds its first frame
         self.axvlines: list[dict] = []  # vertical reference lines (matplotlib axvline kwargs), drawn on every panel
         self.set_layout(panels)
 
@@ -290,7 +296,7 @@ class _FigureRenderer:
             widths, self.fitted_aspects = self._fitted_widths(panels, cell_size, fig_width)
             fig_width = sum(widths)
             gridspec_kw = {**gridspec_kw, "width_ratios": widths + [widths[-1]] * (cols - n)}
-        self.fig = Figure(figsize=(fig_width, cell_size[1] * rows))
+        self.fig = Figure(figsize=(fig_width, cell_size[1] * rows), dpi=dpi)  # dpi: a video's pixel box is read off this figure
         FigureCanvasAgg(self.fig)
         self.dpi = dpi
         axes = self.fig.subplots(rows, cols, squeeze=False, gridspec_kw=gridspec_kw).flatten()
@@ -399,6 +405,14 @@ class _FigureRenderer:
 
     def add_image(self, index: int, arr, x=None):
         self.images[index] = (arr, x)
+        self.videos.pop(index, None)  # a still replaces a video
+        if index in self.image_axes:
+            self._draw_image(index)
+
+    def add_video(self, index: int, frames, x=None, fps: float = 4):
+        """Loop `frames`, (T, H, W[, C]) uint8, on panel `index` from now until something replaces it."""
+        self.images[index] = (frames[0], x)  # what the panel's AxesImage holds: sizes the panel, and is what figure() shows
+        self.videos[index] = {"frames": frames, "fps": float(fps), "t0": time.monotonic(), "box": None, "regions": None}
         if index in self.image_axes:
             self._draw_image(index)
 
@@ -438,12 +452,48 @@ class _FigureRenderer:
             fixed_x, fixed_y = self.fixed[line.axes]
             line.axes.relim()
             line.axes.autoscale_view(scalex=not fixed_x, scaley=not fixed_y)
+        playing = [i for i in self.videos if i in self.image_artists and len(self.videos[i]["frames"]) > 1]
+        if playing:
+            return self._render_video(playing[0])
         buf = io.BytesIO()
         self.fig.savefig(buf, format="png", dpi=self.dpi)
         return buf.getvalue()
 
+    def _render_video(self, index: int) -> bytes:
+        """
+        The figure as an animated PNG: drawn once, then the video's frames painted into the video
+        panel's pixel box. Each frame's box is compressed once per video (and again only if the panel
+        moves); a redraw re-encodes just the first, full, frame. See _video.py.
+        """
+        import numpy as np
+
+        from . import _video
+
+        video = self.videos[index]
+        frames, fps = video["frames"], video["fps"]
+        self.fig.canvas.draw()
+        rgb = np.asarray(self.fig.canvas.buffer_rgba())[..., :3].copy()
+        height, width = rgb.shape[:2]
+        bb = self.image_artists[index].get_window_extent()  # display pixels, origin bottom left
+        x0, x1 = max(0, round(bb.x0)), min(width, round(bb.x1))
+        y0, y1 = max(0, height - round(bb.y1)), min(height, height - round(bb.y0))
+        box = (x0, y0, x1 - x0, y1 - y0)
+        if video["box"] != box:
+            video["box"] = box
+            video["regions"] = [_video.encode(_video.fit(f, box[2], box[3]))[1] for f in frames]
+        now = int((time.monotonic() - video["t0"]) * fps) % len(frames)  # the frame the video has reached
+        rgb[y0:y1, x0:x1] = _video.fit(frames[now], box[2], box[3])
+        regions = video["regions"]
+        return _video.apng(rgb, box, regions[now + 1:] + regions[:now], fps)
+
 
 # --------------------------------------------------------------------------- the render process
+
+
+# A frame carrying a video is sent whole on every redraw (a browser can't patch an image in place). Jupyter
+# servers could cap an output stream at 1 MB/s (notebook < 7's iopub_data_rate_limit; jupyter_server
+# leaves it off), and base64 inflates by 4/3: so no more than this many PNG bytes a second.
+_WIRE_BYTES_PER_SECOND = 500_000
 
 
 def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_pid):
@@ -456,18 +506,23 @@ def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Jupyter interrupts the whole process group; not our business
     renderer = _FigureRenderer(panels, xlim, layout)
     dirty, last_draw, running = False, 0.0, True
+    floor = refresh_seconds  # the least time between frames
     while running:
         if os.getppid() != parent_pid:  # notebook kernel died or restarted: nobody is listening
             return
         now = time.monotonic()
-        if dirty and now - last_draw >= refresh_seconds:
-            outbox.put(renderer.render())  # points that arrive during this render go into the next frame
+        if dirty and now - last_draw >= floor:
+            png = renderer.render()  # points that arrive during this render go into the next frame
+            outbox.put(png)
             dirty, last_draw = False, time.monotonic()
+            # A frame with a video in it is ~100x a still one. Keep the output stream under the budget: the
+            # video loops in the browser meanwhile, and only the curves wait a little longer.
+            floor = max(refresh_seconds, len(png) / _WIRE_BYTES_PER_SECOND) if renderer.videos else refresh_seconds
             continue
         # Block until something arrives. With points pending, wake when the redraw floor is reached;
         # otherwise sleep (checking for a dead parent every half second). refresh_seconds=0 means
         # "redraw whenever there is new data" and must not spin while idle.
-        wait = max(refresh_seconds - (now - last_draw), 0.001) if dirty else 0.5
+        wait = max(floor - (now - last_draw), 0.001) if dirty else 0.5
         try:
             msg = inbox.get(timeout=wait)
         except queue.Empty:
@@ -490,6 +545,9 @@ def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_
                 dirty = True
             elif item[0] == "image":
                 renderer.add_image(*item[1:])
+                dirty = True
+            elif item[0] == "video":
+                renderer.add_video(*item[1:])
                 dirty = True
             else:
                 renderer.add(item[1], item[2])
@@ -710,6 +768,37 @@ class Panel:
         self._plot._send_image(self._index, arr)
         return self
 
+    def video(self, frames, *, fps=4, rows=None, cols=None, griddim=None, vmin=None, vmax=None, scale_each=False,
+              channels=None, cmap="gray", padding=0, pad_value=0, max_images=64, max_cols=8):
+        """
+        Loop a video on this panel until the next `video` or `imshow` replaces it -- wandb.Video's
+        layouts and its `fps` (4 by default, as wandb's): (T, C, H, W) is one clip, (B, T, C, H, W) a
+        batch of them, tiled into a grid frame by frame (e.g. 16 environments of a rollout, a 4x4
+        grid). Channels-last (T, H, W, C) / (B, T, H, W, C) and grayscale (T, H, W) work too, as do
+        imshow's grid and range keywords; the range is taken over the whole clip, so the brightness
+        doesn't flicker.
+
+        The frames are tiled and turned into uint8 here, on the calling thread; the render process
+        then draws the figure as an animated PNG whose video panel plays at `fps` in the browser.
+        """
+        from ._images import to_video
+
+        spec = self.spec
+        assert not (spec["metrics"] or spec["secondary"]), \
+            f"panel {self._index} is showing curves ({' '.join(spec['metrics'] + spec['secondary'])}); " \
+            f"use a different panel for the video"
+        others = [i for i in self._plot._video_fps if i != self._index]
+        assert not others, f"panel {others[0]} is already playing a video; one video per figure"
+        assert fps > 0, f"fps must be positive, got {fps!r}"
+        arr = to_video(frames, rows=rows, cols=cols, griddim=griddim, vmin=vmin, vmax=vmax, scale_each=scale_each,
+                       channels=channels, padding=padding, pad_value=pad_value, max_images=max_images,
+                       max_cols=max_cols)
+        if spec["kind"] != "image" or spec["cmap"] != cmap:
+            spec["kind"], spec["cmap"] = "image", cmap
+            self._plot._send_layout()
+        self._plot._send_image(self._index, arr, fps=fps)
+        return self
+
     def _set(self, key, value):
         self.spec[key] = value
         self._plot._send_layout()
@@ -864,7 +953,8 @@ class LivePlot:
         self._record_path = record if isinstance(record, str) else None
         self.frames: list[tuple[float, bytes]] = []  # (time, png) of every frame shown, if record=True
         self.axvlines: list[dict] = []  # vertical reference lines added with axvline()
-        self._images: dict[int, object] = {}  # panel index -> the uint8 array it is showing
+        self._images: dict[int, object] = {}  # panel index -> the uint8 array it is showing ((T, H, W[, C]) for a video)
+        self._video_fps: dict[int, float] = {}  # panel index -> fps, for the panel playing a video
         self._image_steps: dict[int, object] = {}  # panel index -> the x it was shown at
         self._fixed_grid = False  # set by subplots(): grow a panel's metrics, never the grid
         self._t0 = time.monotonic()
@@ -1247,14 +1337,21 @@ class LivePlot:
         Show an image on the plot, replacing whatever was there -- the whole of `LiveImage` in one
         call. Uses the plot's image panel, creating it on first use. Keywords go to `Panel.imshow`.
         """
+        return self._image_panel("imshow").imshow(x, **kwargs)
+
+    def video(self, frames, **kwargs):
+        """`Panel.video` on the plot's image panel, creating it on first use, as `imshow` does."""
+        return self._image_panel("video").video(frames, **kwargs)
+
+    def _image_panel(self, method: str) -> Panel:
         for i, spec in enumerate(self._specs):
             if spec["kind"] == "image":
-                return Panel(self, i).imshow(x, **kwargs)
+                return Panel(self, i)
         assert not self._fixed_grid, \
-            "this plot's grid comes from subplots(); call imshow() on one of its panels instead"
+            f"this plot's grid comes from subplots(); call {method}() on one of its panels instead"
         self._specs.append(self._with_defaults(_normalise_panel({"kind": "image"})))
         self._send_layout()
-        return Panel(self, len(self._specs) - 1).imshow(x, **kwargs)
+        return Panel(self, len(self._specs) - 1)
 
     def _place(self, metrics):
         """Record metrics as already belonging to a panel, and redraw."""
@@ -1263,17 +1360,23 @@ class LivePlot:
             self.data.setdefault(name, ([], []))
         self._send_layout()
 
-    def _send_image(self, index: int, arr):
+    def _send_image(self, index: int, arr, fps=None):
+        """A still (`fps` None) or a video's frames, for panel `index`."""
         x = self.step if self._wrapping or self.latest else None  # a step in the title only once there are steps
         self._images[index], self._image_steps[index] = arr, x
+        if fps is None:
+            self._video_fps.pop(index, None)
+        else:
+            self._video_fps[index] = fps
+        message = ("image", index, arr, x) if fps is None else ("video", index, arr, x, fps)
         if self.mode == "process":
-            self._inbox.put(("image", index, arr, x))
+            self._inbox.put(message)
         elif self.mode == "thread":
-            self._renderer.add_image(index, arr, x)
+            getattr(self._renderer, "add_" + message[0])(*message[1:])
 
     def _image_state(self) -> dict:
-        """What a fresh renderer needs to redraw the images: panel index -> (array, x)."""
-        return {i: (arr, self._image_steps.get(i)) for i, arr in self._images.items()}
+        """What a fresh renderer needs to redraw the images: panel index -> (array, x); a video's first frame."""
+        return {i: (arr[0] if i in self._video_fps else arr, self._image_steps.get(i)) for i, arr in self._images.items()}
 
     def _send_layout(self):
         if self.mode == "process":
@@ -1329,15 +1432,35 @@ class LivePlot:
         """
         Write the recorded frames (needs `record=True`) as an animated GIF that replays at the real
         pace of the run divided by `speedup`, with no single frame shown longer than `max_frame_ms`.
-        Returns the path. Uses Pillow (installed with matplotlib).
+        A video panel plays in the GIF as it did live. Returns the path. Uses Pillow (installed with matplotlib).
         """
         import io
 
         from PIL import Image
 
+        from . import _video
+
         if not self.frames:
             raise ValueError("nothing recorded: create the plot with record=True")
-        images = [Image.open(io.BytesIO(png)).convert("RGB") for _, png in self.frames]
+        times = [t for t, _ in self.frames]
+        spans = [min(int(1000 * (b - a) / speedup), max_frame_ms) for a, b in zip(times, times[1:])] + [hold_last_ms]
+        images, durations = [], []
+        for k, ((_, png), span) in enumerate(zip(self.frames, spans)):
+            if not _video.is_animated(png):
+                images.append(Image.open(io.BytesIO(png)).convert("RGB"))
+                durations.append(span)
+                continue
+            # A frame with a video in it played in the browser until the next frame replaced it; replay
+            # that stretch of the video (at most 25 fps, to keep the file small), and at least one loop
+            # of it at the very end.
+            loop = _video.frames(png)
+            per = loop[1][1] if len(loop) > 1 else 40
+            if k == len(spans) - 1:
+                span = max(span, per * len(loop))
+            step = max(per, 40)
+            for j in range(max(1, round(span / step))):
+                images.append(loop[int(j * step / per) % len(loop)][0])
+                durations.append(step)
         # A GIF has ONE palette for the whole animation. Quantising each frame to its own adaptive
         # palette (the obvious thing) corrupts the colours of every frame whose palette differs from
         # the first one's. So build a single palette from a sample of frames and map every frame to it.
@@ -1350,8 +1473,6 @@ class LivePlot:
             sheet.paste(images[i], (0, k * h))
         palette = sheet.quantize(colors=colors, method=Image.Quantize.MEDIANCUT)
         images = [im.quantize(palette=palette, dither=Image.Dither.NONE) for im in images]
-        times = [t for t, _ in self.frames]
-        durations = [min(int(1000 * (b - a) / speedup), max_frame_ms) for a, b in zip(times, times[1:])] + [hold_last_ms]
         durations = [max(d, 20) for d in durations]  # GIF viewers ignore very short delays
         images[0].save(path, save_all=True, append_images=images[1:], duration=durations, loop=0, optimize=False)
         return path
@@ -1374,6 +1495,8 @@ class LivePlot:
                 renderer.hist[name] = (list(xs), list(ys))
             for line in self.axvlines:
                 renderer.add_axvline(line)
+            for i, fps in self._video_fps.items():
+                renderer.add_video(i, self._images[i], self._image_steps.get(i), fps)
         except Exception as e:  # noqa: BLE001
             self.mode = "off"
             warnings.warn(

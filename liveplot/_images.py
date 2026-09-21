@@ -103,15 +103,17 @@ def _as_bhwc(a, channels: str | None):
 
 
 def _to_uint8(a, vmin, vmax, scale_each: bool):
-    """Scale to 0..255. uint8 passes straight through unless vmin/vmax ask for a rescale."""
+    """Scale to 0..255. uint8 passes straight through unless vmin/vmax ask for a rescale. `a` is
+    (B, H, W, C), or (B, T, H, W, C) for videos, where scale_each scales each clip as a whole."""
     import numpy as np
 
     if a.dtype == np.uint8 and vmin is None and vmax is None:
         return a
     a = a.astype(np.float32, copy=False)
     if scale_each:  # per image, like torchvision's make_grid(scale_each=True)
-        lo = a.min(axis=(1, 2, 3), keepdims=True) if vmin is None else np.float32(vmin)
-        hi = a.max(axis=(1, 2, 3), keepdims=True) if vmax is None else np.float32(vmax)
+        per = tuple(range(1, a.ndim))
+        lo = a.min(axis=per, keepdims=True) if vmin is None else np.float32(vmin)
+        hi = a.max(axis=per, keepdims=True) if vmax is None else np.float32(vmax)
     else:
         lo = np.float32(a.min() if vmin is None else vmin)
         hi = np.float32(a.max() if vmax is None else vmax)
@@ -152,12 +154,12 @@ def _tile(a, rows: int, cols: int, pad_value: int, padding: int):
     """
     import numpy as np
 
-    _, h, w, c = a.shape
+    lead, (h, w, c) = a.shape[1:-3], a.shape[-3:]  # lead: a video's time axis, (B, T, H, W, C) -> (T, H', W', C)
     p = padding if rows * cols > 1 else 0
-    out = np.full((rows * (h + p) + p, cols * (w + p) + p, c), pad_value, dtype=a.dtype)
+    out = np.full((*lead, rows * (h + p) + p, cols * (w + p) + p, c), pad_value, dtype=a.dtype)
     for k, img in enumerate(a[: rows * cols]):  # more images than cells: the rest fall off the end
         r, col = divmod(k, cols)
-        out[p + r * (h + p): p + r * (h + p) + h, p + col * (w + p): p + col * (w + p) + w] = img
+        out[..., p + r * (h + p): p + r * (h + p) + h, p + col * (w + p): p + col * (w + p) + w, :] = img
     return out
 
 
@@ -186,4 +188,36 @@ def to_grid(x, *, rows=None, cols=None, griddim=None, vmin=None, vmax=None, scal
     a = a[: rows * cols]  # drop before scaling: an image nobody can see must not set the range
     a = _to_uint8(a, vmin, vmax, scale_each)
     grid = _tile(a, rows, cols, pad_value, padding)
+    return grid[..., 0] if grid.shape[-1] == 1 else grid
+
+
+def to_video(x, *, rows=None, cols=None, griddim=None, vmin=None, vmax=None, scale_each=False,
+             channels=None, padding=0, pad_value=0, max_images: int | None = 64, max_cols: int | None = 8):
+    """
+    A clip, or a batch of clips, -> (T, H, W) or (T, H, W, 3|4) uint8 frames, each frame one grid.
+
+    The layouts are wandb.Video's and TensorBoard's add_video's, (T, C, H, W) for one clip and
+    (B, T, C, H, W) for a batch of them (a batch is tiled into a grid, as wandb does), plus the
+    channels-last forms (T, H, W, C) / (B, T, H, W, C) and grayscale (T, H, W). The value range is
+    taken over the whole clip, not frame by frame, so the brightness doesn't flicker. Runs on the
+    calling thread, like `to_grid`.
+    """
+    import warnings
+
+    a = _as_array(x)
+    if a.ndim == 5:
+        b, t = a.shape[:2]
+        f = _as_bhwc(a.reshape(b * t, *a.shape[2:]), channels)
+        f = f.reshape(b, t, *f.shape[1:])
+    elif a.ndim in (3, 4):
+        f = _as_bhwc(a, "none" if a.ndim == 3 else channels)[None]  # one clip: (1, T, H, W, C)
+    else:
+        raise ValueError(f"video needs a 3-, 4- or 5-d array ((T, H, W), (T, C, H, W), (B, T, C, H, W)), got shape {a.shape}")
+    assert f.shape[1] >= 1, "a video needs at least one frame"
+    if max_images is not None and f.shape[0] > max_images:
+        warnings.warn(f"video: showing the first {max_images} of {f.shape[0]} clips (max_images=None shows them all)", stacklevel=3)
+        f = f[:max_images]
+    rows, cols = grid_shape(f.shape[0], rows, cols, griddim, max_cols)
+    f = _to_uint8(f[: rows * cols], vmin, vmax, scale_each)
+    grid = _tile(f, rows, cols, pad_value, padding)
     return grid[..., 0] if grid.shape[-1] == 1 else grid
