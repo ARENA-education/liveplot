@@ -219,3 +219,74 @@ for i in range(1, 20):
     curves.update(HTML(f'<img src="{data_uri(counter_png(i), "image/png")}" width="320">'))
     time.sleep(0.5)
 print("done: the curves above counted to 19 while the video kept playing")
+
+# %% [markdown]
+# ## Test 5: do video updates disturb the curves?
+# Two live plots in one cell, each with curves updating 5 times a second for 20 seconds. Plot A receives
+# three videos of increasing weight (light, medium, and noise-heavy -- deliberately abusive, a few MB);
+# plot B receives none. Each plot counts the curve updates that actually arrived and the longest gap
+# between two of them, and times each video from "announced" to "arrived".
+#
+# Expect: both plots receive all 100 updates (`PASS`), plot B's longest gap stays near 200 ms, and plot
+# A's longest gap is at most about the heaviest video's transfer time (a big video briefly delays the
+# curves; it must not stop them). The videos should never restart except when a new one arrives.
+
+# %%
+def noisy_frames(n, amount, w=320, h=240, seed=0):
+    """The ball clip with `amount` of per-pixel noise mixed in: 0 = light, 1 = incompressible static."""
+    rng = np.random.default_rng(seed)
+    base = ball_frames(n=n, w=w, h=h, colour=(40, 160, 60)).astype(np.float32)
+    noise = rng.integers(0, 256, size=base.shape).astype(np.float32)
+    return ((1 - amount) * base + amount * noise).astype(np.uint8)
+
+
+def stress_host(uid, label):
+    display(HTML(f"""
+<div style="font-family:monospace;font-size:12px"><b>plot {label}</b>
+<div style="display:flex;gap:16px;align-items:flex-start">
+  <img id="img-{uid}" src="{data_uri(counter_png(0), 'image/png')}" width="240">
+  <div><div id="vstat-{uid}">video: none</div>
+       <video id="vid-{uid}" autoplay loop muted playsinline width="240" style="background:#eee;height:180px"></video></div>
+</div>
+<div id="report-{uid}">report: no curve update has arrived yet</div></div>
+<script>
+  window["lp_arrivals_{uid}"] = [];
+  setInterval(function() {{
+    var a = window["lp_arrivals_{uid}"], gap = 0;
+    for (var i = 1; i < a.length; i++) gap = Math.max(gap, a[i] - a[i - 1]);
+    var r = document.getElementById("report-{uid}");
+    if (a.length) r.innerText = "report: " + (a.length >= 100 ? "PASS" : "...") + " - " + a.length + "/100 curve updates arrived, longest gap " + gap.toFixed(0) + " ms";
+  }}, 250);
+</script>"""))
+    return display(HTML("<i style='font-size:10px'>mailbox</i>"), display_id=True)
+
+
+def post(mailbox, js):
+    mailbox.update(HTML(f"<i style='font-size:10px'>mailbox</i><script>{js}</script>"))
+
+
+print("encoding the three test videos...")
+heavy_videos = {name: encode(noisy_frames(90, amount), "h264") for name, amount in (("light", 0.0), ("medium", 0.15), ("heavy", 1.0))}
+print({name: f"{len(v) / 1e3:.0f} kB" for name, v in heavy_videos.items()})
+ua, ub = uuid.uuid4().hex[:8], uuid.uuid4().hex[:8]
+box_a, box_b = stress_host(ua, "A (gets videos)"), stress_host(ub, "B (no videos)")
+send_times = []
+for i in range(1, 101):
+    for uid, box in ((ua, box_a), (ub, box_b)):
+        post(box, f"""var img = document.getElementById("img-{uid}");
+                      if (img) {{ img.src = "{data_uri(counter_png(i), 'image/png')}"; window["lp_arrivals_{uid}"].push(performance.now()); }}""")
+    if i in (20, 50, 80):
+        name = {20: "light", 50: "medium", 80: "heavy"}[i]
+        data = heavy_videos[name]
+        t0 = time.time()
+        post(box_a, f"""window["lp_t0_{ua}"] = performance.now();
+                        document.getElementById("vstat-{ua}").innerText = "{name} video ({len(data) / 1e3:.0f} kB): downloading...";""")
+        post(box_a, f"""var v = document.getElementById("vid-{ua}"), s = document.getElementById("vstat-{ua}");
+                        var dt = performance.now() - window["lp_t0_{ua}"];
+                        v.src = "{data_uri(data, 'video/mp4')}";
+                        s.innerText = "{name} video ({len(data) / 1e3:.0f} kB): arrived in " + dt.toFixed(0) + " ms";""")
+        send_times.append((name, len(data), time.time() - t0))
+    time.sleep(0.2)
+for name, size, dt in send_times:
+    print(f"kernel side: sending the {name} video ({size / 1e3:.0f} kB) took {dt * 1000:.0f} ms")
+print("done: read the two report lines above")
