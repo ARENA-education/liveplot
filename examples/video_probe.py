@@ -32,8 +32,9 @@ RUN = {
     "2_patch_html": False,  # passed: JupyterLab + Chrome, Colab
     "3_patch_js": False,  # passed: JupyterLab + Chrome, Colab
     "4_stacked": False,  # passed: JupyterLab + Chrome, Colab
-    "5_stress": True,  # passed unthrottled: JupyterLab + Chrome, Colab. Now: re-run on a throttled connection
-    "6_throughput": True,
+    "5_stress": False,  # passed: JupyterLab + Chrome (also throttled to 10 Mbit/s), Colab. Turn on for a throttled run
+    "6_throughput": True,  # Colab (DevTools "Fast 4G"): first point lost; throttle didn't reach Colab's outputs
+    "7_bursts": True,
 }
 if os.environ.get("LIVEPLOT_PROBE_ALL"):
     RUN = dict.fromkeys(RUN, True)
@@ -361,15 +362,14 @@ def test_throughput():
 (function() {{
   window["lp_{uid}"] = {{points: []}};
   setInterval(function() {{
-    var p = window["lp_{uid}"].points, n = p.length;
+    var all = window["lp_{uid}"].points, p = all.filter(function(q) {{ return isFinite(q[1]); }}), n = p.length;
     if (n < 2) return;
     var mx = 0, my = 0; p.forEach(function(q) {{ mx += q[0] / n; my += q[1] / n; }});
     var sxy = 0, sxx = 0, syy = 0; p.forEach(function(q) {{ sxy += (q[0] - mx) * (q[1] - my); sxx += (q[0] - mx) ** 2; syy += (q[1] - my) ** 2; }});
     var slope = sxy / sxx, icpt = my - slope * mx, r2 = sxy * sxy / (sxx * syy);
-    var done = n >= 10, ok = done && r2 > 0.9 && slope > 0;
-    if (done) window["lp_{uid}"].points = p.slice(0, 10);
+    var done = all.length >= 10, ok = done && r2 > 0.9 && slope > 0;
     lpResult(document.getElementById("res-{uid}"), "6_throughput", ok ? "PASS" : (done ? "FAIL" : "running"),
-      {{points_MB_ms: p.map(function(q) {{ return [q[0], Math.round(q[1])]; }}), fixed_cost_ms: Math.round(icpt),
+      {{points_MB_ms: all.map(function(q) {{ return [q[0], isFinite(q[1]) ? Math.round(q[1]) : "lost"]; }}), fixed_cost_ms: Math.round(icpt),
         throughput_MB_per_s: +(1000 / slope).toFixed(1), throughput_Mbit_per_s: +(8000 / slope).toFixed(0), r2: +r2.toFixed(3)}});
   }}, 250);
 }})();
@@ -389,3 +389,52 @@ def test_throughput():
 
 if RUN["6_throughput"]:
     test_throughput()
+
+# %% [markdown]
+# ## Test 7: are back-to-back updates of one output ever lost?
+# liveplot sends each change as a new version of one small output. If the frontend only renders the
+# newest version when several arrive together, the ones in between never run. That's harmless for curves
+# (the next update replaces them) but not for a video. Bursts of 20 updates are sent with 0, 10, 50 and
+# 200 ms between them, and the page counts how many ran. Then a 1 MB update is followed at once by a tiny
+# one: did the big one run? PASS means nothing was lost at 50 ms spacing and the big update survived;
+# losses at 0-10 ms are reported, not failed.
+
+# %%
+def test_bursts():
+    uid = uuid.uuid4().hex[:8]
+    gaps = (0, 10, 50, 200)
+    display(HTML(f"""<div id="b-{uid}" style="font-family:monospace;font-size:12px">bursts: waiting</div>{result_line(uid, "7_bursts")}
+<script>{WATCH_JS}
+(function() {{
+  window["lp_{uid}"] = {{got: {{}}, big: false, final: false}};
+  var timer = setInterval(function() {{
+    var s = window["lp_{uid}"], counts = {{}};
+    {list(gaps)}.forEach(function(g) {{ counts["gap_" + g + "ms"] = (s.got[g] || []).length + "/20"; }});
+    var ok = (s.got[50] || []).length === 20 && (s.got[200] || []).length === 20 && s.big;
+    lpResult(document.getElementById("res-{uid}"), "7_bursts", s.final ? (ok ? "PASS" : "FAIL") : "running",
+      Object.assign(counts, {{big_update_survived_a_follower: s.big, lost_at_0ms: (function() {{
+        var got = s.got[0] || [], lost = []; for (var i = 0; i < 20; i++) if (got.indexOf(i) < 0) lost.push(i); return lost; }})()}}));
+    if (s.final) clearInterval(timer);
+  }}, 250);
+}})();
+</script>"""))
+    box = display(HTML("<i style='font-size:10px'>mailbox</i>"), display_id=True)
+
+    def post(js):
+        box.update(HTML(f'<i style="font-size:10px">mailbox</i><script>(function() {{ var s = window["lp_{uid}"]; if (!s) return; {js} }})();</script>'))
+
+    for gap in gaps:
+        for i in range(20):
+            post(f"(s.got[{gap}] = s.got[{gap}] || []).push({i});")
+            if gap:
+                time.sleep(gap / 1000)
+        time.sleep(1)
+    post(f'var x = "{base64.b64encode(os.urandom(1_000_000)).decode()}"; s.big = x.length > 0;')
+    post("s.after_big = true;")
+    time.sleep(3)
+    post("s.final = true;")
+    time.sleep(1)
+
+
+if RUN["7_bursts"]:
+    test_bursts()

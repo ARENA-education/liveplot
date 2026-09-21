@@ -116,8 +116,10 @@ def main():
             errors = page.evaluate("[...document.querySelectorAll('.jp-RenderedText[data-mime-type=\"application/vnd.jupyter.stderr\"]')].map(e => e.innerText)")
             cells = page.locator(".jp-CodeCell .jp-Cell-outputWrapper")
             for i in range(cells.count()):
-                cells.nth(i).scroll_into_view_if_needed()
-                cells.nth(i).screenshot(path=str(out / f"cell_{i}.png"))
+                try:  # a cell whose test is switched off has an empty, invisible output area
+                    cells.nth(i).screenshot(path=str(out / f"cell_{i}.png"), timeout=5000)
+                except Exception:  # noqa: BLE001
+                    pass
             browser.close()
     finally:
         server.terminate()
