@@ -139,7 +139,10 @@ def test_figure_includes_the_image():
     assert sum(len(ax.images) for ax in fig.axes) == 1
     assert sum(len(ax.get_lines()) for ax in fig.axes) == 1
     img = next(im for ax in fig.axes for im in ax.images)
-    assert img.get_array().shape == (16, 16, 3), "two rows of two 8x8 RGB images"
+    assert img.get_array().shape == (22, 22, 3), "two rows of two 8x8 RGB images, 2px gaps"
+    assert img.axes.get_title() == "step 4", "an untitled image panel says when it was drawn"
+    ax_img.set_title("samples")
+    assert next(im for ax in plot.figure().axes for im in ax.images).axes.get_title() == "samples (step 4)"
 
 
 class _FakeHandle:
@@ -195,5 +198,5 @@ def test_process_mode_curves_beside_images(fake_notebook):
     plot.finish()
     assert len(fake_notebook.frames) > n and all(f[:8] == PNG for f in fake_notebook.frames)
     assert not plot._proc.is_alive()
-    assert len(plot._images) == 1 and plot._images[1].shape == (16, 16, 3)
+    assert len(plot._images) == 1 and plot._images[1].shape == (22, 22, 3)
     assert [s["kind"] for s in plot._specs] == ["curve", "image"]

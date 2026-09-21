@@ -159,7 +159,7 @@ for step in ...:
 
 ### What `imshow` accepts
 
-A batch is tiled into a grid for you: `rows=` or `cols=` alone infers the other, `grid_size=(r, c)`
+A batch is tiled into a grid for you: `rows=` or `cols=` alone infers the other, `griddim=(r, c)`
 fixes both, padding with blanks or dropping the tail as needed.
 
 | input | read as |

@@ -75,8 +75,8 @@ from a generator, in one figure:
     ax_samples.imshow(netG(noise), rows=2, vmin=-1, vmax=1)   # replaces the last one
 
 `plot.imshow(x)` does the same on a plot of its own, making the panel on first use.
-A batch is tiled for you (`rows` / `cols` / `grid_size=(r, c)`, padding or dropping
-to fit); (H, W), (C, H, W), (H, W, C), (B, H, W), (B, C, H, W) and (B, H, W, C) are
+A batch is tiled for you (`rows` / `cols` / `griddim=(r, c)`, padding or dropping
+to fit, with make_grid's 2-pixel gaps); (H, W), (C, H, W), (H, W, C), (B, H, W), (B, C, H, W) and (B, H, W, C) are
 all understood, and the two genuinely ambiguous shapes, (3, H, W) and (4, H, W),
 raise and name the `channels=` to pass. Values are scaled to the batch's full range
 unless `vmin` / `vmax` fix it (worth doing live: otherwise the black point moves
@@ -267,7 +267,7 @@ class _FigureRenderer:
     def __init__(self, panels, xlim, layout, hist=None, images=None):
         self.xlim, self.layout = xlim, layout  # xlim = default x range or None; layout = (max_cols, rows, cols, cell_size, dpi, xlabel)
         self.hist = hist if hist is not None else {}
-        self.images = dict(images) if images else {}  # panel index -> the uint8 array it is showing
+        self.images = dict(images) if images else {}  # panel index -> (the uint8 array it is showing, its x)
         self.axvlines: list[dict] = []  # vertical reference lines (matplotlib axvline kwargs), drawn on every panel
         self.set_layout(panels)
 
@@ -289,6 +289,7 @@ class _FigureRenderer:
         self.smooth = {}  # metric -> TWEMA weight in (0, 1) or None
         self.fixed = {}  # axes -> (x fixed?, y fixed?): fixed axes are never autoscaled
         self.panel_cmaps = {i: p["cmap"] for i, p in enumerate(panels)}
+        self.panel_titles = {i: p["title"] for i, p in enumerate(panels)}
         self.image_axes = {}  # panel index -> its Axes, for the image panels
         self.image_artists = {}  # ... and the AxesImage drawn on it, so a redraw can set_data in place
         for i, (ax, panel) in enumerate(zip(axes, panels)):
@@ -345,9 +346,9 @@ class _FigureRenderer:
                 self._draw_axvline(kw, [ax])
         for kw in self.axvlines:
             self._draw_axvline(kw)
-        for index, arr in self.images.items():  # a re-layout rebuilds the figure; put the pictures back
+        for index in self.images:  # a re-layout rebuilds the figure; put the pictures back
             if index in self.image_axes:
-                self._draw_image(index, arr)
+                self._draw_image(index)
         self.fig.tight_layout()
 
     def add_axvline(self, kw: dict):
@@ -363,19 +364,23 @@ class _FigureRenderer:
             if label:
                 ax.text(kw["x"], 0.98, f" {label}", transform=ax.get_xaxis_transform(), va="top", ha="left", fontsize=7, color="0.3", rotation=90)
 
-    def add_image(self, index: int, arr):
-        self.images[index] = arr
+    def add_image(self, index: int, arr, x=None):
+        self.images[index] = (arr, x)
         if index in self.image_axes:
-            self._draw_image(index, arr)
+            self._draw_image(index)
 
-    def _draw_image(self, index: int, arr):
+    def _draw_image(self, index: int):
+        arr, x = self.images[index]
+        ax = self.image_axes[index]
+        if x is not None:  # say how old the picture is: it is only redrawn when imshow is called
+            title, when = self.panel_titles[index], f"{self.layout[5]} {x:g}"
+            ax.set_title(f"{title} ({when})" if title else when)
         artist = self.image_artists.get(index)
         if artist is not None and artist.get_array().shape == arr.shape:
             artist.set_data(arr)  # same size as last time: no new artist, no rescale
             return
         if artist is not None:
             artist.remove()
-        ax = self.image_axes[index]
         cmap = self.panel_cmaps.get(index, "gray")
         self.image_artists[index] = ax.imshow(arr, cmap=cmap, interpolation="nearest")
 
@@ -448,7 +453,7 @@ def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_
                 renderer.add_axvline(item[1])
                 dirty = True
             elif item[0] == "image":
-                renderer.add_image(item[1], item[2])
+                renderer.add_image(*item[1:])
                 dirty = True
             else:
                 renderer.add(item[1], item[2])
@@ -632,12 +637,13 @@ class Panel:
         """Like `ax.plot("name", data=...)`: put these metrics on the left axis. See `_Axis.plot`."""
         return self.left.plot(*metrics)
 
-    def imshow(self, x, *, rows=None, cols=None, grid_size=None, vmin=None, vmax=None,
-               scale_each=False, channels=None, cmap="gray", pad_value=0):
+    def imshow(self, x, *, rows=None, cols=None, griddim=None, vmin=None, vmax=None,
+               scale_each=False, channels=None, cmap="gray", padding=2, pad_value=0):
         """
         Like `Axes.imshow`, but for a whole batch and repeatable: show `x` on this panel, replacing
         whatever was there. A batch is tiled into a grid -- `rows` or `cols` alone infers the other,
-        `grid_size=(rows, cols)` fixes both (padding with blanks, or dropping the tail).
+        `griddim=(rows, cols)` fixes both (padding with blanks, or dropping the tail). Images are
+        `padding` pixels of `pad_value` apart, as in make_grid. The title shows the step it was drawn at.
 
         Accepts (H, W), (C, H, W), (H, W, C), (B, H, W), (B, C, H, W) and (B, H, W, C); (3, H, W)
         and (4, H, W) are ambiguous and raise, telling you which `channels=` to pass.
@@ -653,8 +659,8 @@ class Panel:
         assert not (spec["metrics"] or spec["secondary"]), \
             f"panel {self._index} is showing curves ({' '.join(spec['metrics'] + spec['secondary'])}); " \
             f"use a different panel for the image"
-        arr = to_grid(x, rows=rows, cols=cols, grid_size=grid_size, vmin=vmin, vmax=vmax,
-                      scale_each=scale_each, channels=channels, pad_value=pad_value)
+        arr = to_grid(x, rows=rows, cols=cols, griddim=griddim, vmin=vmin, vmax=vmax,
+                      scale_each=scale_each, channels=channels, padding=padding, pad_value=pad_value)
         if spec["kind"] != "image" or spec["cmap"] != cmap:
             spec["kind"], spec["cmap"] = "image", cmap
             self._plot._send_layout()
@@ -807,6 +813,7 @@ class LivePlot:
         self.frames: list[tuple[float, bytes]] = []  # (time, png) of every frame shown, if record=True
         self.axvlines: list[dict] = []  # vertical reference lines added with axvline()
         self._images: dict[int, object] = {}  # panel index -> the uint8 array it is showing
+        self._image_steps: dict[int, object] = {}  # panel index -> the x it was shown at
         self._fixed_grid = False  # set by subplots(): grow a panel's metrics, never the grid
         self._t0 = time.monotonic()
         self._done = False
@@ -826,7 +833,7 @@ class LivePlot:
                 f"rendering on the training thread instead (~0.15 s per redraw).",
                 stacklevel=2,
             )
-            self._renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout, images=self._images)
+            self._renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout, images=self._image_state())
             self.mode = "thread"
 
     # -- setup -------------------------------------------------------------------
@@ -1172,11 +1179,16 @@ class LivePlot:
         self._send_layout()
 
     def _send_image(self, index: int, arr):
-        self._images[index] = arr
+        x = self.step
+        self._images[index], self._image_steps[index] = arr, x
         if self.mode == "process":
-            self._inbox.put(("image", index, arr))
+            self._inbox.put(("image", index, arr, x))
         elif self.mode == "thread":
-            self._renderer.add_image(index, arr)
+            self._renderer.add_image(index, arr, x)
+
+    def _image_state(self) -> dict:
+        """What a fresh renderer needs to redraw the images: panel index -> (array, x)."""
+        return {i: (arr, self._image_steps.get(i)) for i, arr in self._images.items()}
 
     def _send_layout(self):
         if self.mode == "process":
@@ -1190,7 +1202,7 @@ class LivePlot:
         built on the calling thread and independent of the render process: title it, tweak it,
         `fig.savefig("run.png")`, or show it in a report. Safe to call during or after training.
         """
-        renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout, images=self._images)
+        renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout, images=self._image_state())
         for name, (xs, ys) in self.data.items():
             renderer.hist[name] = (list(xs), list(ys))
         for line in self.axvlines:
@@ -1268,7 +1280,7 @@ class LivePlot:
         # process will usually kill a renderer built here too (a bad panel spec, a missing backend),
         # so if this fails, say so once and carry on collecting into plot.data.
         try:
-            renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout, images=self._images)
+            renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout, images=self._image_state())
             for name, (xs, ys) in self.data.items():
                 renderer.hist[name] = (list(xs), list(ys))
             for line in self.axvlines:

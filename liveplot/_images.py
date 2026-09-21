@@ -29,6 +29,8 @@ def _as_array(x):
         x = x.detach()  # a tensor that wants grad
     if hasattr(x, "cpu"):
         x = x.cpu()  # ... and may be on a GPU, where numpy can't see it
+    if getattr(x, "is_floating_point", lambda: False)():
+        x = x.float()  # bfloat16 (autocast output) has no numpy dtype; float16 is widened too, harmlessly
     return np.asarray(x)
 
 
@@ -117,15 +119,15 @@ def _to_uint8(a, vmin, vmax, scale_each: bool):
     return (np.clip(a, 0.0, 1.0) * 255).round().astype(np.uint8)
 
 
-def grid_shape(n: int, rows: int | None, cols: int | None, grid_size=None) -> tuple[int, int]:
+def grid_shape(n: int, rows: int | None, cols: int | None, griddim=None) -> tuple[int, int]:
     """
-    Rows x cols for `n` images. `grid_size=(rows, cols)` fixes both; one of `rows` / `cols` infers
+    Rows x cols for `n` images. `griddim=(rows, cols)` fixes both; one of `rows` / `cols` infers
     the other; with neither, the near-square rule liveplot already uses for its panel grid. Unlike
     the panel grid, the result need not fit: the caller pads short and drops long.
     """
-    if grid_size is not None:
-        assert rows is None and cols is None, "give grid_size, or rows/cols, not both"
-        rows, cols = grid_size
+    if griddim is not None:
+        assert rows is None and cols is None, "give griddim, or rows/cols, not both"
+        rows, cols = griddim
     if rows is None and cols is None:
         rows = math.ceil(math.sqrt(n))
         cols = math.ceil(n / rows)
@@ -138,29 +140,33 @@ def grid_shape(n: int, rows: int | None, cols: int | None, grid_size=None) -> tu
     return rows, cols
 
 
-def _tile(a, rows: int, cols: int, pad_value: int):
-    """(B, H, W, C) -> (rows*H, cols*W, C), padding with blanks or dropping the tail as needed."""
+def _tile(a, rows: int, cols: int, pad_value: int, padding: int):
+    """
+    (B, H, W, C) -> one (H', W', C) grid with `padding` pixels of `pad_value` around every image, as
+    torchvision's make_grid lays it out; missing images are blank cells, extra ones are dropped. A
+    single image gets no border.
+    """
     import numpy as np
 
-    b, h, w, c = a.shape
-    cells = rows * cols
-    if b > cells:
-        a = a[:cells]  # more images than cells: the rest fall off the end
-    elif b < cells:
-        a = np.concatenate([a, np.full((cells - b, h, w, c), pad_value, dtype=a.dtype)])
-    return a.reshape(rows, cols, h, w, c).transpose(0, 2, 1, 3, 4).reshape(rows * h, cols * w, c)
+    _, h, w, c = a.shape
+    p = padding if rows * cols > 1 else 0
+    out = np.full((rows * (h + p) + p, cols * (w + p) + p, c), pad_value, dtype=a.dtype)
+    for k, img in enumerate(a[: rows * cols]):  # more images than cells: the rest fall off the end
+        r, col = divmod(k, cols)
+        out[p + r * (h + p): p + r * (h + p) + h, p + col * (w + p): p + col * (w + p) + w] = img
+    return out
 
 
-def to_grid(x, *, rows=None, cols=None, grid_size=None, vmin=None, vmax=None,
-            scale_each=False, channels=None, pad_value=0):
+def to_grid(x, *, rows=None, cols=None, griddim=None, vmin=None, vmax=None,
+            scale_each=False, channels=None, padding=2, pad_value=0):
     """
     A tensor -> one uint8 image, (H, W) for grayscale or (H, W, 3|4), ready for `Axes.imshow`.
     Runs on the calling thread: tiling 10 64x64 RGB samples costs ~0.2 ms and quarters what the
     render process has to unpickle, and a CUDA tensor has to come back to the host here anyway.
     """
     a = _as_bhwc(_as_array(x), channels)
-    rows, cols = grid_shape(a.shape[0], rows, cols, grid_size)
+    rows, cols = grid_shape(a.shape[0], rows, cols, griddim)
     a = a[: rows * cols]  # drop before scaling: an image nobody can see must not set the range
     a = _to_uint8(a, vmin, vmax, scale_each)
-    grid = _tile(a, rows, cols, pad_value)
+    grid = _tile(a, rows, cols, pad_value, padding)
     return grid[..., 0] if grid.shape[-1] == 1 else grid
