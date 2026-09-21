@@ -119,6 +119,7 @@ License, Copyright (c) 2023 Tyler Lum) -- see THIRD_PARTY_LICENSES.md.
 
 from __future__ import annotations
 
+import base64
 import io
 import math
 import multiprocessing as mp
@@ -133,6 +134,8 @@ import weakref
 
 _PANEL_KEYS = {"title", "metrics", "secondary", "xlabel", "ylabel", "ylabel2", "xlim", "ylim", "ylim2", "axhlines", "axhlines2",
                "axvlines", "smooth", "yscale", "yscale2", "kind", "cmap", "legend"}
+_KINDS = ("curve", "image", "video")
+_PICTURES = ("image", "video")  # panels that show a picture (a video's is its first frame, under the playing clip)
 _REF_LINE_STYLE = {"linestyle": "--", "linewidth": 1, "color": "0.45"}  # defaults for axhline / axvline artists
 
 
@@ -180,9 +183,9 @@ def _normalise_panel(spec, allow_empty: bool = False) -> dict:
     unknown = set(spec) - _PANEL_KEYS
     assert not unknown, f"unknown panel keys {sorted(unknown)}; allowed: {sorted(_PANEL_KEYS)}"
     kind = spec.get("kind", "curve")
-    assert kind in ("curve", "image"), f'kind must be "curve" or "image", got {kind!r}'
+    assert kind in _KINDS, f"kind must be one of {_KINDS}, got {kind!r}"
     metrics, secondary = list(spec.get("metrics", [])), list(spec.get("secondary", []))
-    assert metrics or secondary or kind == "image" or allow_empty, f"a panel needs at least one metric: {spec!r}"
+    assert metrics or secondary or kind in _PICTURES or allow_empty, f"a panel needs at least one metric: {spec!r}"
     for lim in ("xlim", "ylim", "ylim2"):
         if spec.get(lim) is not None:
             assert len(spec[lim]) == 2, f"{lim} must be a (low, high) pair"
@@ -202,7 +205,7 @@ def _normalise_panel(spec, allow_empty: bool = False) -> dict:
         "smooth": _check_smooth(spec.get("smooth")),  # TWEMA weight in [0, 1); None = plot-wide default; 0 = off
         "yscale": spec.get("yscale", "linear"),  # "linear" or "log", left axis
         "yscale2": spec.get("yscale2", "linear"),  # ... right axis
-        "kind": kind,  # "curve" (metric lines) or "image" (one picture, overwritten in place)
+        "kind": kind,  # "curve" (metric lines), "image" (one picture) or "video" (one looping clip), each replaced in place
         "cmap": spec.get("cmap", "gray"),  # image panels only; matplotlib ignores it for RGB data
         "legend": dict(spec.get("legend") or {}),  # Axes.legend kwargs (loc, ncols, bbox_to_anchor, ...)
     }
@@ -286,13 +289,16 @@ class _FigureRenderer:
         # One row with pictures in it, and no width_ratios chosen: size each image panel to its picture
         # at the row's height, and give the curves what is left, so neither is framed in white space.
         self.fitted_aspects = None
-        if rows == 1 and "width_ratios" not in gridspec_kw and any(p["kind"] == "image" for p in panels):
+        if rows == 1 and "width_ratios" not in gridspec_kw and any(p["kind"] in _PICTURES for p in panels):
             widths, self.fitted_aspects = self._fitted_widths(panels, cell_size, fig_width)
             fig_width = sum(widths)
             gridspec_kw = {**gridspec_kw, "width_ratios": widths + [widths[-1]] * (cols - n)}
-        self.fig = Figure(figsize=(fig_width, cell_size[1] * rows))
+        self.fig = Figure(figsize=(fig_width, cell_size[1] * rows), dpi=dpi)
         FigureCanvasAgg(self.fig)
         self.dpi = dpi
+        self.layout_id = getattr(self, "layout_id", 0) + 1  # tells the display a new figure was laid out
+        self.panel_kinds = [p["kind"] for p in panels]
+        self.panel_axes = {}  # panel index -> its Axes (and its right-hand twin), for cutting it out as a tile
         axes = self.fig.subplots(rows, cols, squeeze=False, gridspec_kw=gridspec_kw).flatten()
         palette = matplotlib.rcParams["axes.prop_cycle"].by_key()["color"]
         self.lines = {}
@@ -304,13 +310,16 @@ class _FigureRenderer:
         self.image_axes = {}  # panel index -> its Axes, for the image panels
         self.image_artists = {}  # ... and the AxesImage drawn on it, so a redraw can set_data in place
         for i, (ax, panel) in enumerate(zip(axes, panels)):
-            if panel["kind"] == "image":
+            self.panel_axes[i] = [ax]
+            if panel["kind"] in _PICTURES:
                 ax.set_title(panel["title"])
                 ax.set_axis_off()  # pixel indices along the edge of a tiled grid are just noise
                 self.image_axes[i] = ax
                 continue
             names = panel["metrics"] + panel["secondary"]
             ax2 = ax.twinx() if panel["secondary"] else None
+            if ax2 is not None:
+                self.panel_axes[i].append(ax2)
             ax.set_yscale(panel["yscale"])
             if ax2 is not None:
                 ax2.set_yscale(panel["yscale2"])
@@ -373,12 +382,12 @@ class _FigureRenderer:
         cell_w, cell_h = cell_size
         aspects = {}
         for i, panel in enumerate(panels):
-            if panel["kind"] == "image":
+            if panel["kind"] in _PICTURES:
                 arr = self.images.get(i, (None,))[0]
                 aspects[i] = None if arr is None else arr.shape[1] / arr.shape[0]
         image_h = cell_h - 0.55  # the title above, and tight_layout's margins
         widths = [0.2 + image_h * aspects[i] if aspects.get(i) else cell_w for i in range(len(panels))]
-        curves = [i for i, panel in enumerate(panels) if panel["kind"] != "image"]
+        curves = [i for i, panel in enumerate(panels) if panel["kind"] not in _PICTURES]
         if curves:
             spare = (fig_width - sum(widths[i] for i in aspects)) / len(curves)
             for i in curves:
@@ -408,7 +417,7 @@ class _FigureRenderer:
             return self.set_layout(self.panels)  # a picture of a new shape: re-fit the panel widths (draws it too)
         ax = self.image_axes[index]
         if x is not None:  # say how old the picture is: it is only redrawn when imshow is called
-            title, when = self.panel_titles[index], f"{self.layout[5]} {x:g}"
+            title, when = self.panel_titles[index], f"{self.layout[5].strip()} {x:g}"
             ax.set_title(f"{title} ({when})" if title else when)
         artist = self.image_artists.get(index)
         if artist is not None and artist.get_array().shape == arr.shape:
@@ -426,6 +435,87 @@ class _FigureRenderer:
             ys.append(float(value))
 
     def render(self) -> bytes:
+        """The whole figure as PNG bytes."""
+        self._update()
+        buf = io.BytesIO()
+        self.fig.savefig(buf, format="png", dpi=self.dpi)
+        return buf.getvalue()
+
+    def output(self, tiles: bool, colors: int | None):
+        """What the render process sends: the whole figure as PNG bytes, or each panel as a tile (see `tiles`)."""
+        return self.tiles(colors) if tiles else self.render()
+
+    def tiles(self, colors: int | None = 64) -> dict:
+        """
+        Each panel as its own PNG, cut out of the rendered figure, so a display can send only the
+        panels that changed. The cuts run midway through the gaps between panels' outer boxes (tick
+        labels, legends and all), so the tiles never overlap and together cover the whole figure.
+        Curve tiles are reduced to a `colors`-colour palette built from their own lines' colours, so every
+        series keeps its exact colour (None: full colour); picture tiles keep full colour.
+
+        Returns {"layout_id", "size": (w, h), "tiles": {panel: ((x, y, w, h), png)}, "videos": {panel: (x, y, w, h)}},
+        in pixels from the top left; "videos" is where each video panel's picture is, for the player on top.
+        """
+        import numpy as np
+
+        self._update()
+        self.fig.canvas.draw()
+        rgb = np.asarray(self.fig.canvas.buffer_rgba())[..., :3]
+        height, width = rgb.shape[:2]
+        rects = self._tile_rects(width, height)
+        tiles = {}
+        for i, (x0, y0, x1, y1) in rects.items():
+            crop = rgb[y0:y1, x0:x1]
+            picture = self.panel_kinds[i] in _PICTURES
+            tiles[i] = ((x0, y0, x1 - x0, y1 - y0), _png(crop, None if picture or not colors else self._panel_colors(i), colors))
+        videos = {}
+        for i, ax in self.image_axes.items():
+            if self.panel_kinds[i] == "video":
+                box = ax.get_window_extent()
+                videos[i] = (int(round(box.x0)), int(round(height - box.y1)), int(round(box.width)), int(round(box.height)))
+        return {"layout_id": self.layout_id, "size": (width, height), "tiles": tiles, "videos": videos}
+
+    def _tile_rects(self, width, height) -> dict:
+        """Panel index -> (x0, y0, x1, y1) pixel box, from the top left, for `tiles`."""
+        renderer = self.fig.canvas.get_renderer()
+        cells, boxes = {}, {}
+        for i, axes in self.panel_axes.items():
+            spec = axes[0].get_subplotspec()
+            cells[i] = (spec.rowspan.start, spec.colspan.start)
+            box = axes[0].get_tightbbox(renderer)
+            for twin in axes[1:]:
+                box = type(box).union([box, twin.get_tightbbox(renderer)])
+            boxes[i] = box
+        rows = 1 + max(r for r, _ in cells.values())
+        cols = 1 + max(c for _, c in cells.values())
+
+        def cuts(n, lo_of, hi_of, extent):
+            # boundaries between consecutive rows/columns: midway between the outer edge of one and the next
+            lo = [min((lo_of(i) for i, rc in cells.items() if rc_key(rc) == k), default=None) for k in range(n)]
+            hi = [max((hi_of(i) for i, rc in cells.items() if rc_key(rc) == k), default=None) for k in range(n)]
+            edges = [0]
+            for k in range(1, n):
+                edges.append(int(round((hi[k - 1] + lo[k]) / 2)) if hi[k - 1] is not None and lo[k] is not None else int(round(extent * k / n)))
+            return edges + [extent]
+
+        rc_key = lambda rc: rc[1]  # noqa: E731 - columns first
+        xs = cuts(cols, lambda i: boxes[i].x0, lambda i: boxes[i].x1, width)
+        rc_key = lambda rc: rc[0]  # noqa: E731 - then rows, in image coordinates (y down)
+        ys = cuts(rows, lambda i: height - boxes[i].y1, lambda i: height - boxes[i].y0, height)
+        return {i: (xs[c], ys[r], xs[c + 1], ys[r + 1]) for i, (r, c) in cells.items()}
+
+    def _panel_colors(self, i) -> list:
+        """The colours drawn on panel i's axes (lines, reference lines, legend), for its palette."""
+        from matplotlib.colors import to_rgb
+
+        colors = []
+        for ax in self.panel_axes[i]:
+            for line in ax.get_lines():
+                colors.append(to_rgb(line.get_color()))
+        return colors
+
+    def _update(self):
+        """Put the history into the lines and rescale the axes (everything a render needs)."""
         for name, line in self.lines.items():
             xs, ys = self.hist[name]
             if self.smooth[name] and len(ys) > 1:
@@ -438,18 +528,81 @@ class _FigureRenderer:
             fixed_x, fixed_y = self.fixed[line.axes]
             line.axes.relim()
             line.axes.autoscale_view(scalex=not fixed_x, scaley=not fixed_y)
-        buf = io.BytesIO()
-        self.fig.savefig(buf, format="png", dpi=self.dpi)
-        return buf.getvalue()
+
+
+def _compose(frame) -> bytes:
+    """Per-panel tiles -> the whole figure as one PNG (for recording)."""
+    from PIL import Image
+
+    canvas = Image.new("RGB", frame["size"], "white")
+    for rect, png in frame["tiles"].values():
+        canvas.paste(Image.open(io.BytesIO(png)).convert("RGB"), rect[:2])
+    buf = io.BytesIO()
+    canvas.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _plot_palette(colors, n: int):
+    """
+    Up to `n` palette colours for a plot: pure white, greys, every colour actually drawn, and for each
+    saturated colour a ramp of paler shades (anti-aliased edges, faded raw curves, fills). None if the
+    colours don't fit n with at least 3 shades each; the caller then lets Pillow choose (median cut).
+    """
+    import numpy as np
+
+    exact, saturated = [], []
+    for c in colors:
+        rgb = tuple(int(round(v * 255)) for v in c)
+        if rgb not in exact:
+            exact.append(rgb)
+            if max(rgb) - min(rgb) > 24 and rgb not in saturated:  # not a grey
+                saturated.append(rgb)
+    fixed = [(255, 255, 255)] + [(g, g, g) for g in (0, 40, 80, 115, 150, 185, 215, 240)]
+    fixed += [c for c in exact if c not in fixed]
+    if not saturated:
+        return fixed[:n]
+    shades = (n - len(fixed)) // len(saturated)
+    if shades < 3:
+        return None
+    out = list(fixed)
+    for rgb in saturated:
+        for a in np.linspace(0.85, 0.1, shades):  # the colour itself is already in `fixed`
+            shade = tuple(int(round(a * v + (1 - a) * 255)) for v in rgb)
+            if shade not in out:
+                out.append(shade)
+    return out[:n]
+
+
+def _png(rgb, colors=None, n: int | None = 64) -> bytes:
+    """(H, W, 3) uint8 -> PNG bytes; with `colors`, reduced to an n-colour palette built from them (see _plot_palette)."""
+    from PIL import Image
+
+    img = Image.fromarray(rgb)
+    extra = {}
+    if colors is not None and n:
+        table = _plot_palette(colors, n)
+        if table is None:
+            img = img.quantize(colors=n, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+        else:
+            pal = Image.new("P", (1, 1))
+            flat = [v for c in table for v in c]
+            pal.putpalette(flat + flat[:3] * (256 - len(table)))  # pad with white
+            img = img.quantize(palette=pal, dither=Image.Dither.NONE)
+        if n <= 16:
+            extra["bits"] = 4
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", compress_level=6, **extra)
+    return buf.getvalue()
 
 
 # --------------------------------------------------------------------------- the render process
 
 
-def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_pid):
+def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_pid, output=(False, None)):
     """
     Loop: collect messages from `inbox`, redraw at most once per `refresh_seconds`
-    while there is new data, put PNG bytes on `outbox`. Messages: ("data", step,
+    while there is new data, put the frame on `outbox` (PNG bytes, or per-panel tiles if
+    `output` = (tiles, colors) says so; see _FigureRenderer.output). Messages: ("data", step,
     metrics); ("layout", panels, layout) to rebuild the figure; None to finish (draw one
     last frame, put None, exit). Exits on its own if the parent process is gone.
     """
@@ -461,7 +614,7 @@ def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_
             return
         now = time.monotonic()
         if dirty and now - last_draw >= refresh_seconds:
-            outbox.put(renderer.render())  # points that arrive during this render go into the next frame
+            outbox.put(renderer.output(*output))  # points that arrive during this render go into the next frame
             dirty, last_draw = False, time.monotonic()
             continue
         # Block until something arrives. With points pending, wake when the redraw floor is reached;
@@ -495,7 +648,7 @@ def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_
                 renderer.add(item[1], item[2])
                 dirty = True
     if dirty:
-        outbox.put(renderer.render())  # the final frame
+        outbox.put(renderer.output(*output))  # the final frame
     outbox.put(None)
 
 
@@ -525,6 +678,8 @@ def _collect_loop(plot_ref, outbox, proc, done):
                 plot = plot_ref()
                 if plot is None or plot.mode != "process" or not proc.is_alive():
                     break
+                plot._tick()  # tiles held back by the send budget go out when it allows
+                del plot
                 continue
             if item is None:
                 break
@@ -710,6 +865,22 @@ class Panel:
         self._plot._send_image(self._index, arr)
         return self
 
+    def video(self, x, fps: float = 10, *, vmin=None, vmax=None, channels=None):
+        """
+        A looping video on this panel, replacing the one before; it plays on while other panels update.
+        `x` is the frames, (T, H, W, C), (T, C, H, W) or (T, H, W), numpy or torch (make a grid of
+        environments into one frame yourself: one video per panel), played at `fps` (default 10, slow
+        enough to follow frame by frame); or an encoded MP4 / WebM, as bytes or a path, which keeps its
+        own frame rate. Values are scaled like imshow's (uint8 as is, else vmin..vmax, default min..max).
+        Frames are encoded to H.264 on a background thread (needs `pip install imageio-ffmpeg`); until
+        the video arrives, and wherever video can't play, the panel shows its first frame.
+        """
+        spec = self.spec
+        assert not (spec["metrics"] or spec["secondary"]), \
+            f"panel {self._index} is showing curves ({' '.join(spec['metrics'] + spec['secondary'])}); use a different panel for the video"
+        self._plot._send_video(self._index, x, fps, vmin, vmax, channels)
+        return self
+
     def _set(self, key, value):
         self.spec[key] = value
         self._plot._send_layout()
@@ -825,6 +996,9 @@ class LivePlot:
         desc: str | None = None,
         record: bool | str = False,
         smooth: float | None = None,
+        display: str = "auto",
+        colors: int | None = 64,
+        max_mbps: float | None = 4.0,
     ):
         """
         LivePlot([iterable,] *panels, total=None, initial=0, unit="step", unit_scale=1, ...)
@@ -837,6 +1011,13 @@ class LivePlot:
             module docstring). With none, every logged metric shares one panel.
         total, initial, unit, unit_scale: tqdm's arguments, with tqdm's meaning; they define the
             x-axis (see module docstring).
+        display: "auto" (in a notebook, each panel updated on its own, which video panels need; see
+            _display.py), or "png" (the whole figure as one image, replaced on each redraw).
+        colors: palette size for curve panels as sent to the notebook (64 looks identical and is a
+            quarter of the bytes); None for full colour. Image and video panels are always full colour.
+        max_mbps: the most the plot sends to the notebook, averaged over 2 s. A redraw that would
+            exceed it is skipped (the next carries the newest state), so on a slow connection the plot
+            updates less often instead of falling behind. None for no limit.
         """
         iterable, specs = (args[0], args[1:]) if args and not isinstance(args[0], (str, dict)) else (None, args)
         self.smooth = _check_smooth(smooth)  # default TWEMA weight for panels that don't set their own (wandb's smoothing slider)
@@ -872,7 +1053,16 @@ class LivePlot:
         self._proc = self._renderer = self._inbox = self._outbox = None
         self._last_draw = self._last_postfix = 0.0
         self._n_logs = 0
-        self._handle = self._make_display_handle()
+        assert display in ("auto", "png"), f'display must be "auto" or "png", got {display!r}'
+        self._colors, self._html, self._videos = colors, None, {}
+        self._video_boxes = {}  # panel -> stacked output for its video, in "png" display mode
+        if display == "auto" and self._in_kernel():
+            from ._display import HtmlDisplay
+
+            self._html = HtmlDisplay(max_mbps)
+            self._handle = self._html
+        else:
+            self._handle = self._make_display_handle()
         if self._handle is None and not self._record:
             self.mode = "off"  # not in a notebook: nothing to draw on, just collect metrics
             return
@@ -887,8 +1077,25 @@ class LivePlot:
             )
             self._renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout, images=self._image_state())
             self.mode = "thread"
+        if self._html is not None:
+            self._html.ensure_boxes(len(self._specs))
 
     # -- setup -------------------------------------------------------------------
+
+    @staticmethod
+    def _in_kernel() -> bool:
+        """Running in a notebook kernel (Jupyter, Colab, VS Code), where the per-panel display works."""
+        try:
+            from IPython import get_ipython
+        except ImportError:
+            return False
+        shell = get_ipython()
+        return shell is not None and getattr(shell, "kernel", None) is not None
+
+    @property
+    def _output(self):
+        """What the renderer should produce: (tiles?, palette size)."""
+        return (self._html is not None, self._colors)
 
     @staticmethod
     def _make_display_handle():
@@ -1015,7 +1222,7 @@ class LivePlot:
         self._proc = ctx.Process(
             target=_render_worker,
             args=(self._panels_or_placeholder(), self._inbox, self._outbox, self.refresh_seconds, self._layout,
-                  self.x_range, os.getpid()),
+                  self.x_range, os.getpid(), self._output),
             daemon=True,
         )
         # A spawned child re-runs the parent's __main__ *file* if there is one. In a
@@ -1179,7 +1386,7 @@ class LivePlot:
         if self.mode == "thread":
             self._renderer.add(step, picked)
             if time.monotonic() - self._last_draw >= self.refresh_seconds:
-                self._show(self._renderer.render())
+                self._show(self._renderer.output(*self._output))
         if self._bar is not None and time.monotonic() - self._last_postfix > 0.1:
             self._bar.set_postfix(self.latest, refresh=False)
             self._last_postfix = time.monotonic()
@@ -1256,6 +1463,17 @@ class LivePlot:
         self._send_layout()
         return Panel(self, len(self._specs) - 1).imshow(x, **kwargs)
 
+    def video(self, x, fps: float = 10, **kwargs):
+        """`Panel.video` on the plot's video panel, made on first use (like `imshow`)."""
+        for i, spec in enumerate(self._specs):
+            if spec["kind"] == "video":
+                return Panel(self, i).video(x, fps, **kwargs)
+        assert not self._fixed_grid, \
+            "this plot's grid comes from subplots(); call video() on one of its panels instead"
+        self._specs.append(self._with_defaults(_normalise_panel({"kind": "video"})))
+        self._send_layout()
+        return Panel(self, len(self._specs) - 1).video(x, fps, **kwargs)
+
     def _place(self, metrics):
         """Record metrics as already belonging to a panel, and redraw."""
         self._placed.update(metrics)
@@ -1276,6 +1494,8 @@ class LivePlot:
         return {i: (arr, self._image_steps.get(i)) for i, arr in self._images.items()}
 
     def _send_layout(self):
+        if self._html is not None:
+            self._html.ensure_boxes(len(self._specs), [i for i, spec in enumerate(self._specs) if spec["kind"] == "video"])
         if self.mode == "process":
             self._inbox.put(("layout", self._specs, self._layout))
         elif self.mode == "thread":
@@ -1299,7 +1519,7 @@ class LivePlot:
     def refresh(self):
         """Force a redraw now (thread mode only; the render process paces itself)."""
         if self.mode == "thread":
-            self._show(self._renderer.render())
+            self._show(self._renderer.output(*self._output))
 
     def finish(self):
         """Draw the final frame and shut the renderer down. Safe to call twice, and to interrupt."""
@@ -1312,13 +1532,19 @@ class LivePlot:
                     self._inbox.put(None)  # renderer draws the final frame, sends it, then None
                 self._collector_done.wait(timeout=5.0)  # the collector shows that frame and exits
             elif self.mode == "thread":
-                self._show(self._renderer.render())
+                self._show(self._renderer.output(*self._output))
         finally:
             if self.mode == "process":
                 self._proc.join(timeout=2.0)
                 if self._proc.is_alive():  # e.g. still importing matplotlib on a very busy machine
                     self._proc.terminate()
                     self._proc.join(timeout=2.0)
+            if self._html is not None:
+                self._wait_for_videos()
+                try:
+                    self._html.finish()
+                except Exception as e:  # noqa: BLE001 - never let the display stop a run
+                    warnings.warn(f"LivePlot: couldn't write the final plot ({type(e).__name__}: {e})", stacklevel=2)
             if self._own_bar is not None:
                 self._own_bar.set_postfix(self.latest, refresh=False)
                 self._own_bar.close()
@@ -1386,12 +1612,96 @@ class LivePlot:
         self._renderer = renderer
         self.mode = "thread"
 
-    def _show(self, png: bytes):
-        self.last_png = png
+    def _show(self, frame):
+        """A frame from the renderer: PNG bytes (the "png" display) or per-panel tiles (the notebook display)."""
         self._last_draw = time.monotonic()
+        if isinstance(frame, dict):
+            if self._record:
+                self.last_png = _compose(frame)
+                self.frames.append((time.monotonic() - self._t0, self.last_png))
+            if self._html is not None:
+                self._html.show(frame)
+            return
+        self.last_png = frame
         if self._record:
-            self.frames.append((time.monotonic() - self._t0, png))
+            self.frames.append((time.monotonic() - self._t0, frame))
         if self._handle is not None:
             from IPython.display import Image
 
-            self._handle.update(Image(data=png, format="png"))
+            self._handle.update(Image(data=frame, format="png"))
+
+    def _tick(self):
+        """Called by the frame collector while idle."""
+        if self._html is not None:
+            self._html.flush()
+
+    # -- video --------------------------------------------------------------------
+
+    def _send_video(self, index: int, x, fps, vmin, vmax, channels):
+        """Panel.video: show the first frame now, encode on a background thread, then send the video."""
+        from . import _video
+
+        spec = self._specs[index]
+        if spec["kind"] != "video":
+            spec["kind"] = "video"
+            self._send_layout()
+        encoded = _video.load(x)
+        if encoded is not None:
+            still = _video.first_frame(encoded[0])
+            frames = None
+        else:
+            frames = _video.as_frames(x, vmin=vmin, vmax=vmax, channels=channels)
+            still = frames[0]
+        if still is not None:
+            self._send_image(index, still)
+        if self._html is None and index not in self._video_boxes and self._handle is not None and self.mode != "off":
+            try:  # "png" display: the video goes in its own output, under the plot (made here, on the main thread)
+                from IPython.display import HTML, display
+
+                self._video_boxes[index] = display(HTML(""), display_id=True)
+            except Exception:  # noqa: BLE001
+                pass
+        if self._html is None and index not in self._video_boxes:
+            return  # nowhere to play it (a script, or recording): the panel shows the first frame
+        generation = self._videos.get(index, (0, None))[0] + 1
+        worker = threading.Thread(target=self._encode_video, args=(index, generation, frames, encoded, fps),
+                                  name="liveplot-video", daemon=True)
+        self._videos[index] = (generation, worker)
+        worker.start()
+
+    def _encode_video(self, index, generation, frames, encoded, fps):
+        from . import _video
+
+        try:
+            data, mime = encoded if encoded is not None else (_video.encode(frames, fps), "video/mp4")
+        except ImportError as e:
+            self._video_failed(index, "can't encode video: imageio-ffmpeg is missing", f"{e}. Fix: pip install imageio-ffmpeg")
+            return
+        except Exception as e:  # noqa: BLE001 - a broken video must never stop a training run
+            self._video_failed(index, f"video encoding failed ({type(e).__name__})", f"{type(e).__name__}: {e}")
+            return
+        if self._videos.get(index, (None,))[0] != generation:
+            return  # a newer video was logged while this one encoded
+        self._video_data = getattr(self, "_video_data", {})
+        self._video_data[index] = (data, mime)
+        try:
+            if self._html is not None:
+                self._html.video(index, data, mime)
+            elif index in self._video_boxes:
+                from IPython.display import HTML
+
+                src = f"data:{mime};base64,{base64.b64encode(data).decode()}"
+                self._video_boxes[index].update(HTML(f'<video autoplay loop muted playsinline controls src="{src}"></video>'))
+        except Exception as e:  # noqa: BLE001
+            warnings.warn(f"LivePlot: couldn't show the video ({type(e).__name__}: {e})", stacklevel=2)
+
+    def _video_failed(self, index, short, detail):
+        warnings.warn(f"LivePlot: {detail}; the panel shows the first frame instead.", stacklevel=2)
+        if self._html is not None:
+            self._html.video_status(index, short)
+
+    def _wait_for_videos(self, timeout=30.0):
+        """finish(): let videos still encoding arrive before the final state is written."""
+        deadline = time.monotonic() + timeout
+        for _, worker in list(self._videos.values()):
+            worker.join(max(0.0, deadline - time.monotonic()))
