@@ -64,6 +64,26 @@ axis, or `metric=` for one) and `axvline` (every panel). Extra kwargs on
 time-weighted EMA with the same 0 to 1 weight (`smooth=0.9`), raw values faded
 behind.
 
+Images beside curves: `LivePlot.subplots` mirrors `plt.subplots`, and a panel can
+hold a picture instead of lines -- loss curves updating every step next to samples
+from a generator, in one figure:
+
+    plot, (ax_loss, ax_samples) = LivePlot.subplots(1, 2, total=n_steps, figsize=(11, 4))
+    ax_loss.plot("lossD", "lossG")             # which metrics live on this axis
+    ax_loss.twinx().plot("D(x)")               # matplotlib's spelling for a right-hand axis
+    ...
+    ax_samples.imshow(netG(noise), rows=2, vmin=-1, vmax=1)   # replaces the last one
+
+`plot.imshow(x)` does the same on a plot of its own, making the panel on first use.
+A batch is tiled for you (`rows` / `cols` / `grid_size=(r, c)`, padding or dropping
+to fit); (H, W), (C, H, W), (H, W, C), (B, H, W), (B, C, H, W) and (B, H, W, C) are
+all understood, and the two genuinely ambiguous shapes, (3, H, W) and (4, H, W),
+raise and name the `channels=` to pass. Values are scaled to the batch's full range
+unless `vmin` / `vmax` fix it (worth doing live: otherwise the black point moves
+every frame), or `scale_each=True` scales each image alone, as make_grid does.
+Unlike matplotlib, which ignores vmin/vmax for colour data and clips it to [0, 1],
+these apply to colour images too.
+
 How it works: the training thread only appends numbers (~40 us per `log`). A
 separate *render process* owns the matplotlib figure, redraws it at most once per
 `refresh_seconds` (default 1.0; points arriving in between are batched into the
@@ -112,7 +132,7 @@ import warnings
 import weakref
 
 _PANEL_KEYS = {"title", "metrics", "secondary", "xlabel", "ylabel", "ylabel2", "xlim", "ylim", "ylim2", "axhlines", "axhlines2",
-               "axvlines", "smooth", "yscale", "yscale2"}
+               "axvlines", "smooth", "yscale", "yscale2", "kind", "cmap"}
 _REF_LINE_STYLE = {"linestyle": "--", "linewidth": 1, "color": "0.45"}  # defaults for axhline / axvline artists
 
 
@@ -153,13 +173,16 @@ def _check_smooth(weight):
     return weight
 
 
-def _normalise_panel(spec) -> dict:
+def _normalise_panel(spec, allow_empty: bool = False) -> dict:
+    """`allow_empty` is for the panels `LivePlot.subplots` hands out before anything is drawn on them."""
     if isinstance(spec, str):
         spec = _parse_panel_string(spec)
     unknown = set(spec) - _PANEL_KEYS
     assert not unknown, f"unknown panel keys {sorted(unknown)}; allowed: {sorted(_PANEL_KEYS)}"
+    kind = spec.get("kind", "curve")
+    assert kind in ("curve", "image"), f'kind must be "curve" or "image", got {kind!r}'
     metrics, secondary = list(spec.get("metrics", [])), list(spec.get("secondary", []))
-    assert metrics or secondary, f"a panel needs at least one metric: {spec!r}"
+    assert metrics or secondary or kind == "image" or allow_empty, f"a panel needs at least one metric: {spec!r}"
     for lim in ("xlim", "ylim", "ylim2"):
         if spec.get(lim) is not None:
             assert len(spec[lim]) == 2, f"{lim} must be a (low, high) pair"
@@ -179,6 +202,8 @@ def _normalise_panel(spec) -> dict:
         "smooth": _check_smooth(spec.get("smooth")),  # TWEMA weight in [0, 1); None = plot-wide default; 0 = off
         "yscale": spec.get("yscale", "linear"),  # "linear" or "log", left axis
         "yscale2": spec.get("yscale2", "linear"),  # ... right axis
+        "kind": kind,  # "curve" (metric lines) or "image" (one picture, overwritten in place)
+        "cmap": spec.get("cmap", "gray"),  # image panels only; matplotlib ignores it for RGB data
     }
 
 
@@ -239,9 +264,10 @@ class _FigureRenderer:
     rebuilds the figure for a new panel list, keeping the history.
     """
 
-    def __init__(self, panels, xlim, layout, hist=None):
+    def __init__(self, panels, xlim, layout, hist=None, images=None):
         self.xlim, self.layout = xlim, layout  # xlim = default x range or None; layout = (max_cols, rows, cols, cell_size, dpi, xlabel)
         self.hist = hist if hist is not None else {}
+        self.images = dict(images) if images else {}  # panel index -> the uint8 array it is showing
         self.axvlines: list[dict] = []  # vertical reference lines (matplotlib axvline kwargs), drawn on every panel
         self.set_layout(panels)
 
@@ -262,7 +288,15 @@ class _FigureRenderer:
         self.raw_lines = {}  # metric -> faded line of the unsmoothed values, on smoothed panels
         self.smooth = {}  # metric -> TWEMA weight in (0, 1) or None
         self.fixed = {}  # axes -> (x fixed?, y fixed?): fixed axes are never autoscaled
-        for ax, panel in zip(axes, panels):
+        self.panel_cmaps = {i: p["cmap"] for i, p in enumerate(panels)}
+        self.image_axes = {}  # panel index -> its Axes, for the image panels
+        self.image_artists = {}  # ... and the AxesImage drawn on it, so a redraw can set_data in place
+        for i, (ax, panel) in enumerate(zip(axes, panels)):
+            if panel["kind"] == "image":
+                ax.set_title(panel["title"])
+                ax.set_axis_off()  # pixel indices along the edge of a tiled grid are just noise
+                self.image_axes[i] = ax
+                continue
             names = panel["metrics"] + panel["secondary"]
             ax2 = ax.twinx() if panel["secondary"] else None
             ax.set_yscale(panel["yscale"])
@@ -293,7 +327,7 @@ class _FigureRenderer:
             if panel["ylim"]:
                 ax.set_ylim(*panel["ylim"])
             self.fixed[ax] = (xlim is not None, panel["ylim"] is not None)
-            if names != ["_"]:  # (the "waiting for data" placeholder has no legend)
+            if names and names != ["_"]:  # (nothing logged yet, or the "waiting for data" placeholder)
                 ax.legend(handles, names, loc="best", fontsize=8)  # every panel gets a legend (reference lines included)
             if ax2 is not None:
                 ax.set_ylabel(panel["ylabel"] or ", ".join(panel["metrics"]))
@@ -311,6 +345,9 @@ class _FigureRenderer:
                 self._draw_axvline(kw, [ax])
         for kw in self.axvlines:
             self._draw_axvline(kw)
+        for index, arr in self.images.items():  # a re-layout rebuilds the figure; put the pictures back
+            if index in self.image_axes:
+                self._draw_image(index, arr)
         self.fig.tight_layout()
 
     def add_axvline(self, kw: dict):
@@ -320,10 +357,27 @@ class _FigureRenderer:
     def _draw_axvline(self, kw, axes=None):
         label = kw.get("label")
         style = {**_REF_LINE_STYLE, "linestyle": ":", **{k: v for k, v in kw.items() if k != "label"}}
-        for ax in self.axes if axes is None else axes:
+        picture = set(self.image_axes.values())  # a vertical line across a picture means nothing
+        for ax in ([a for a in self.axes if a not in picture] if axes is None else axes):
             ax.axvline(**style)
             if label:
                 ax.text(kw["x"], 0.98, f" {label}", transform=ax.get_xaxis_transform(), va="top", ha="left", fontsize=7, color="0.3", rotation=90)
+
+    def add_image(self, index: int, arr):
+        self.images[index] = arr
+        if index in self.image_axes:
+            self._draw_image(index, arr)
+
+    def _draw_image(self, index: int, arr):
+        artist = self.image_artists.get(index)
+        if artist is not None and artist.get_array().shape == arr.shape:
+            artist.set_data(arr)  # same size as last time: no new artist, no rescale
+            return
+        if artist is not None:
+            artist.remove()
+        ax = self.image_axes[index]
+        cmap = self.panel_cmaps.get(index, "gray")
+        self.image_artists[index] = ax.imshow(arr, cmap=cmap, interpolation="nearest")
 
     def add(self, step, metrics: dict):
         for name, value in metrics.items():
@@ -392,6 +446,9 @@ def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_
                 dirty = True
             elif item[0] == "axvline":
                 renderer.add_axvline(item[1])
+                dirty = True
+            elif item[0] == "image":
+                renderer.add_image(item[1], item[2])
                 dirty = True
             else:
                 renderer.add(item[1], item[2])
@@ -483,6 +540,26 @@ class _Axis:
         self._plot._specs[self._index][key + ("2" if self._right else "")] = value
         self._plot._send_layout()
 
+    def plot(self, *metrics):
+        """
+        Put these metrics on this axis: `ax.plot("lossD", "lossG")`. matplotlib spells the same
+        thing `ax.plot("lossD", data=d)`, naming series in a data source; here the source is the
+        plot itself, filled in later by `log()`. Returns the axis, so calls can be chained.
+        """
+        assert metrics, "plot() needs at least one metric name"
+        assert all(isinstance(m, str) for m in metrics), \
+            f"plot() takes metric names, not data: {[m for m in metrics if not isinstance(m, str)]!r}"
+        panel = self._plot._specs[self._index]
+        assert panel["kind"] == "curve", "this panel is showing an image; use a different panel for curves"
+        key = "secondary" if self._right else "metrics"
+        auto = " / ".join(panel["metrics"] + panel["secondary"])
+        was_auto = panel["title"] in (auto, "")  # unnamed, or named after the metrics it had
+        panel[key].extend(m for m in metrics if m not in panel[key])
+        if was_auto:  # a title set with set_title() survives a later plot() call
+            panel["title"] = " / ".join(panel["metrics"] + panel["secondary"])
+        self._plot._place(metrics)
+        return self
+
     def set_ylabel(self, ylabel):
         self._set("ylabel", str(ylabel))
 
@@ -547,6 +624,43 @@ class Panel:
         assert self.spec["secondary"], "this panel has no right-hand axis (no metrics after '|')"
         return _Axis(self._plot, self._index, right=True)
 
+    def twinx(self) -> _Axis:
+        """Like `Axes.twinx`: this panel's right-hand y-axis, whether or not it holds anything yet."""
+        return _Axis(self._plot, self._index, right=True)
+
+    def plot(self, *metrics) -> _Axis:
+        """Like `ax.plot("name", data=...)`: put these metrics on the left axis. See `_Axis.plot`."""
+        return self.left.plot(*metrics)
+
+    def imshow(self, x, *, rows=None, cols=None, grid_size=None, vmin=None, vmax=None,
+               scale_each=False, channels=None, cmap="gray", pad_value=0):
+        """
+        Like `Axes.imshow`, but for a whole batch and repeatable: show `x` on this panel, replacing
+        whatever was there. A batch is tiled into a grid -- `rows` or `cols` alone infers the other,
+        `grid_size=(rows, cols)` fixes both (padding with blanks, or dropping the tail).
+
+        Accepts (H, W), (C, H, W), (H, W, C), (B, H, W), (B, C, H, W) and (B, H, W, C); (3, H, W)
+        and (4, H, W) are ambiguous and raise, telling you which `channels=` to pass.
+
+        Values are scaled to the full range by default, over the whole batch; `vmin` / `vmax` fix
+        the range instead (worth doing for a live view -- otherwise the black point moves every
+        frame), and `scale_each=True` scales each image on its own, as make_grid does. Unlike
+        matplotlib, `vmin` / `vmax` are honoured for colour images too.
+        """
+        from ._images import to_grid
+
+        spec = self.spec
+        assert not (spec["metrics"] or spec["secondary"]), \
+            f"panel {self._index} is showing curves ({' '.join(spec['metrics'] + spec['secondary'])}); " \
+            f"use a different panel for the image"
+        arr = to_grid(x, rows=rows, cols=cols, grid_size=grid_size, vmin=vmin, vmax=vmax,
+                      scale_each=scale_each, channels=channels, pad_value=pad_value)
+        if spec["kind"] != "image" or spec["cmap"] != cmap:
+            spec["kind"], spec["cmap"] = "image", cmap
+            self._plot._send_layout()
+        self._plot._send_image(self._index, arr)
+        return self
+
     def _set(self, key, value):
         self.spec[key] = value
         self._plot._send_layout()
@@ -590,6 +704,47 @@ class Panel:
 
     def __repr__(self):
         return f"Panel({self._index}: {' '.join(self.spec['metrics'])}{' | ' + ' '.join(self.spec['secondary']) if self.spec['secondary'] else ''})"
+
+
+class _PanelGrid:
+    """
+    The panel array `LivePlot.subplots` returns, indexable the way matplotlib's is: `axes[0][1]`
+    and `axes[0, 1]` both work, `axes.flat` walks it in row-major order, and it unpacks.
+    """
+
+    def __init__(self, rows: list):
+        self._rows = rows
+
+    def __getitem__(self, key):
+        if isinstance(key, tuple):
+            row, col = key
+            return self._rows[row][col]
+        return self._rows[key]
+
+    def __len__(self):
+        return len(self._rows)
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    @property
+    def flat(self) -> list:
+        return [panel for row in self._rows for panel in row]
+
+    @property
+    def shape(self) -> tuple:
+        return (len(self._rows), len(self._rows[0]))
+
+    def _squeezed(self):
+        """matplotlib's squeeze: 1x1 -> the panel, 1xN or Nx1 -> a flat list, else the grid."""
+        flat = self.flat
+        if len(flat) == 1:
+            return flat[0]
+        rows, cols = self.shape
+        return flat if rows == 1 or cols == 1 else self
+
+    def __repr__(self):
+        return f"_PanelGrid({self.shape[0]}x{self.shape[1]})"
 
 
 # --------------------------------------------------------------------------- the handle
@@ -651,6 +806,8 @@ class LivePlot:
         self._record_path = record if isinstance(record, str) else None
         self.frames: list[tuple[float, bytes]] = []  # (time, png) of every frame shown, if record=True
         self.axvlines: list[dict] = []  # vertical reference lines added with axvline()
+        self._images: dict[int, object] = {}  # panel index -> the uint8 array it is showing
+        self._fixed_grid = False  # set by subplots(): grow a panel's metrics, never the grid
         self._t0 = time.monotonic()
         self._done = False
         self._proc = self._renderer = self._inbox = self._outbox = None
@@ -669,7 +826,7 @@ class LivePlot:
                 f"rendering on the training thread instead (~0.15 s per redraw).",
                 stacklevel=2,
             )
-            self._renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout)
+            self._renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout, images=self._images)
             self.mode = "thread"
 
     # -- setup -------------------------------------------------------------------
@@ -691,6 +848,36 @@ class LivePlot:
         for key, value in self._panel_defaults.items():  # plot-level set_xlabel(...) etc. made before the panel existed
             panel[key] = value
         return panel
+
+    @classmethod
+    def subplots(cls, nrows: int = 1, ncols: int = 1, *, figsize=None, squeeze: bool = True,
+                 iterable=None, **kwargs):
+        """
+        Like `plt.subplots`, for a live plot: returns `(plot, axes)` with a fixed nrows x ncols grid
+        of empty panels, which you then fill with `ax.plot("loss", ...)` or `ax.imshow(tensor)`.
+
+            plot, (ax_loss, ax_samples) = LivePlot.subplots(1, 2, total=n_steps, figsize=(11, 4))
+            ax_loss.plot("lossD", "lossG")
+            ax_samples.imshow(netG(fixed_noise), rows=2, vmin=-1, vmax=1)
+
+        `axes` follows matplotlib's squeeze rules: one panel for 1x1, a flat list for a single row
+        or column, a 2-d grid otherwise. `figsize` is the whole figure in inches, as matplotlib
+        means it (liveplot's own `cell_size` is per panel). Every other keyword goes to `LivePlot`.
+        """
+        assert nrows >= 1 and ncols >= 1, f"need at least a 1x1 grid, got {nrows}x{ncols}"
+        kwargs.setdefault("rows", nrows)
+        kwargs.setdefault("cols", ncols)
+        if figsize is not None:
+            kwargs["cell_size"] = (figsize[0] / ncols, figsize[1] / nrows)
+        plot = cls(*([] if iterable is None else [iterable]), **kwargs)
+        plot._specs.extend(
+            plot._with_defaults(_normalise_panel({"metrics": []}, allow_empty=True)) for _ in range(nrows * ncols)
+        )
+        plot._explicit_layout = True
+        plot._fixed_grid = True
+        plot._send_layout()
+        grid = _PanelGrid([[Panel(plot, r * ncols + c) for c in range(ncols)] for r in range(nrows)])
+        return plot, (grid._squeezed() if squeeze else grid)
 
     # -- panels and axes, addressed like matplotlib -----------------------------------
 
@@ -910,19 +1097,31 @@ class LivePlot:
         unplaced = [m for m in new_metrics if m not in self._placed]
         if not unplaced:
             return
-        if self._explicit_layout:
+        curves = [i for i, spec in enumerate(self._specs) if spec["kind"] == "curve"]
+        if self._fixed_grid:
+            # subplots() promised a grid of this shape, so grow a panel rather than the grid: the
+            # first one still empty, else the first curve panel there is.
+            assert curves, "subplots() gave this plot no curve panel to hold " + ", ".join(unplaced)
+            empty = [i for i in curves if not self._specs[i]["metrics"] and not self._specs[i]["secondary"]]
+            self._join_panel(empty[0] if empty else curves[0], unplaced)
+        elif self._explicit_layout:
             for m in unplaced:
                 self._specs.append(self._with_defaults(_normalise_panel({"metrics": [m]})))
-        elif not self._specs:
+        elif not curves:  # nothing but image panels so far (plot.imshow() before the first log)
             self._specs.append(self._with_defaults(_normalise_panel({"metrics": unplaced})))
         else:
-            spec = self._specs[0]
-            was_auto = spec["title"] == " / ".join(spec["metrics"] + spec["secondary"])  # a title nobody chose
-            spec["metrics"].extend(unplaced)
-            if was_auto:  # a title set with set_title() survives a newly discovered metric
-                spec["title"] = " / ".join(spec["metrics"] + spec["secondary"])
+            self._join_panel(curves[0], unplaced)
         self._placed.update(unplaced)
         self._send_layout()
+
+    def _join_panel(self, index: int, unplaced: list):
+        """Add metrics to an existing panel, keeping a title the user chose."""
+        spec = self._specs[index]
+        auto = " / ".join(spec["metrics"] + spec["secondary"])
+        was_auto = spec["title"] in (auto, "")  # a title nobody chose, or a fresh subplots() panel
+        spec["metrics"].extend(unplaced)
+        if was_auto:  # a title set with set_title() survives a newly discovered metric
+            spec["title"] = " / ".join(spec["metrics"] + spec["secondary"])
 
     def axhline(self, y, label=None, *, metric=None, **kwargs):
         """
@@ -951,6 +1150,34 @@ class LivePlot:
         elif self.mode == "thread":
             self._renderer.add_axvline(line)
 
+    def imshow(self, x, **kwargs):
+        """
+        Show an image on the plot, replacing whatever was there -- the whole of `LiveImage` in one
+        call. Uses the plot's image panel, creating it on first use. Keywords go to `Panel.imshow`.
+        """
+        for i, spec in enumerate(self._specs):
+            if spec["kind"] == "image":
+                return Panel(self, i).imshow(x, **kwargs)
+        assert not self._fixed_grid, \
+            "this plot's grid comes from subplots(); call imshow() on one of its panels instead"
+        self._specs.append(self._with_defaults(_normalise_panel({"kind": "image"})))
+        self._send_layout()
+        return Panel(self, len(self._specs) - 1).imshow(x, **kwargs)
+
+    def _place(self, metrics):
+        """Record metrics as already belonging to a panel, and redraw."""
+        self._placed.update(metrics)
+        for name in metrics:
+            self.data.setdefault(name, ([], []))
+        self._send_layout()
+
+    def _send_image(self, index: int, arr):
+        self._images[index] = arr
+        if self.mode == "process":
+            self._inbox.put(("image", index, arr))
+        elif self.mode == "thread":
+            self._renderer.add_image(index, arr)
+
     def _send_layout(self):
         if self.mode == "process":
             self._inbox.put(("layout", self._specs))
@@ -963,7 +1190,7 @@ class LivePlot:
         built on the calling thread and independent of the render process: title it, tweak it,
         `fig.savefig("run.png")`, or show it in a report. Safe to call during or after training.
         """
-        renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout)
+        renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout, images=self._images)
         for name, (xs, ys) in self.data.items():
             renderer.hist[name] = (list(xs), list(ys))
         for line in self.axvlines:
@@ -1041,7 +1268,7 @@ class LivePlot:
         # process will usually kill a renderer built here too (a bad panel spec, a missing backend),
         # so if this fails, say so once and carry on collecting into plot.data.
         try:
-            renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout)
+            renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout, images=self._images)
             for name, (xs, ys) in self.data.items():
                 renderer.hist[name] = (list(xs), list(ys))
             for line in self.axvlines:

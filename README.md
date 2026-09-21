@@ -122,6 +122,75 @@ plot.axvline(label="lr drop")                             # every panel, at the 
 plot.panels[1].axvline(2000, "checkpoint", linestyle="-")  # one panel, at a given x
 ```
 
+## Images beside curves: `subplots`
+
+`LivePlot.subplots` mirrors `plt.subplots`, and a panel can hold a picture instead of lines. That
+gives you the shape a GAN training loop wants: loss curves updating every step, generated samples
+every so often, in one figure and one output cell.
+
+```python
+plot, (ax_loss, ax_samples) = LivePlot.subplots(1, 2, total=epochs * len(loader), figsize=(11, 4))
+ax_loss.plot("lossD", "lossG")            # which metrics live on this axis
+ax_loss.twinx().plot("D(x)")              # matplotlib's own spelling for a right-hand axis
+ax_samples.set_title("generator samples")
+
+for epoch in range(epochs):
+    for imgs, _ in plot(loader, desc=f"epoch {epoch}"):
+        plot.log(lossD=..., lossG=...)                                   # every step
+        if step % 250 == 0:
+            ax_samples.imshow(netG(fixed_noise), rows=2, vmin=-1, vmax=1)  # replaces the last one
+plot.finish()
+```
+
+`ax.plot("lossD", "lossG")` names metrics rather than passing data, which is matplotlib's own
+`ax.plot("lossD", data=d)` form with the data source implicit -- the plot is the source, filled in
+later by `log()`. `axes` follows matplotlib's squeeze rules: one panel for 1x1, a flat list for a
+single row or column, a 2-d grid otherwise (`axes[0][1]` and `axes[0, 1]` both work, and
+`axes.flat` walks it). `figsize` is the whole figure in inches, as matplotlib means it.
+
+For a single picture with no curves, `plot.imshow(x)` makes the panel on first use and every later
+call replaces it:
+
+```python
+plot = LivePlot()
+for step in ...:
+    plot.imshow(model(holdout))     # overwrites, rather than stacking a new plot underneath
+```
+
+### What `imshow` accepts
+
+A batch is tiled into a grid for you: `rows=` or `cols=` alone infers the other, `grid_size=(r, c)`
+fixes both, padding with blanks or dropping the tail as needed.
+
+| input | read as |
+|---|---|
+| `(H, W)`, `(1, H, W)` | one grayscale image |
+| `(H, W, 3)`, `(H, W, 4)` | one colour image, channels last |
+| `(B, H, W)` | `B` grayscale images |
+| `(B, 1\|3\|4, H, W)` | `B` images, channels first (torch's layout) |
+| `(B, H, W, 1\|3\|4)` | `B` images, channels last |
+
+`(3, H, W)` and `(4, H, W)` are the ambiguous ones -- one colour image, or that many grayscale? --
+so they raise, naming the `channels=` to pass. matplotlib sidesteps this by refusing channels-first
+outright; torch holds images that way, so the ambiguity is ours to resolve rather than ignore.
+
+Torch tensors go straight in: the conversion (`detach`, off the GPU, tile, scale to `uint8`) happens
+on the calling thread, costs about 0.2 ms for ten 64x64 RGB samples, and means the render process
+only ever unpickles a finished picture. Nothing in liveplot imports torch.
+
+### Scaling
+
+Values are scaled to the full range of the batch by default. `vmin` / `vmax` fix the range instead,
+which is worth doing for a live view -- otherwise the black point moves every frame. `scale_each=True`
+scales each image on its own, as `torchvision.utils.make_grid` does; it is off by default because it
+hides exactly what you watch samples for, a washed-out or collapsed one stops looking anomalous.
+`uint8` input passes through untouched.
+
+Note that liveplot does this scaling itself rather than leaving it to matplotlib, and so `vmin` /
+`vmax` work for colour images too. matplotlib's `imshow` **ignores** them for RGB(A) data and merely
+clips floats to `[0, 1]`: a generator ending in `tanh` outputs `[-1, 1]`, and roughly 45% of it would
+go to black with no way to say otherwise.
+
 ## Smoothing and log axes
 
 Per-step losses are noisy. `set_smooth(0.9)` draws each curve of a panel through wandb's default smoothing, the [time-weighted exponential moving average](https://docs.wandb.ai/models/app/features/panels/line-plot/smoothing), with the same 0 to 1 weight as wandb's smoothing slider and the raw values faded behind. On the plot it applies to every panel; `set_smooth(0)` turns it off. `set_yscale("log")` on an axis, a panel, or the plot gives log axes.
