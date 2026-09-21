@@ -17,8 +17,8 @@ BRANCH = "video-dev"
 try:
     import google.colab  # noqa: F401
 
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "imageio-ffmpeg",
-                    f"git+https://github.com/ARENA-education/liveplot.git@{BRANCH}"], check=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q",
+                    f"liveplot[video] @ git+https://github.com/ARENA-education/liveplot.git@{BRANCH}"], check=True)
 except ImportError:
     pass
 try:

@@ -19,7 +19,8 @@ dependencies = ["matplotlib>=3.6", "numpy>=1.22", "pillow>=9"]
 
 [project.optional-dependencies]
 notebook = ["ipython>=8.0", "tqdm>=4.60"]  # the live display, and the progress bar
-test = ["pytest", "ipython>=8.0", "tqdm>=4.60"]
+video = ["imageio-ffmpeg>=0.4.8"]  # ax.video(): encodes frames to H.264 with the ffmpeg it bundles
+test = ["pytest", "ipython>=8.0", "tqdm>=4.60", "imageio-ffmpeg>=0.4.8"]
 
 [project.urls]
 Homepage = "https://github.com/ARENA-education/liveplot"
