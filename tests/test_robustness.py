@@ -15,7 +15,8 @@ def test_bad_smooth_weight_is_caught_where_it_is_given():
             LivePlot("loss", smooth=bad, progress=False)
         with pytest.raises(AssertionError, match="weight in"):
             _normalise_panel({"metrics": ["loss"], "smooth": bad})
-    p = LivePlot("loss", {"metrics": ["acc"], "smooth": 0}, smooth=0.9, progress=False)  # the legal range still passes
+    p = LivePlot("loss", "acc", smooth=0.9, progress=False)  # the legal range still passes
+    p["acc"].set_smooth(0)
     assert [pn["smooth"] for pn in p._specs] == [0.9, 0]
 
 

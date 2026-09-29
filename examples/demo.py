@@ -38,7 +38,8 @@ def slow(seconds=0.01):
 
 # %%
 # 1. The one-liner: wrap the range like tqdm, log keyword arguments. Metrics are discovered from
-#    what you log and, with no layout given, share a single panel with a legend. A tqdm bar sits
+#    what you log and, with no layout given, share a single panel (with a legend, once there are
+#    two or more). A tqdm bar sits
 #    under the plot with the latest values as its postfix.
 
 if MAIN:

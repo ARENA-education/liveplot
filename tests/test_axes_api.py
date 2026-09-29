@@ -1,20 +1,25 @@
+import warnings
+
 import numpy as np
 import pytest
 
 from liveplot import LivePlot
-from liveplot.liveplot import Panel, _Axis, _Line, _parse_fmt
+from liveplot.liveplot import Axes, _Line, _parse_fmt
 
 
-def test_addressing_by_metric_and_by_panel():
+def test_one_axes_type_for_panels_twins_and_lookups():
     p = LivePlot("loss | acc", "lr")
     p.log(0, loss=1.0, acc=0.5, lr=1e-3)
-    assert [type(x) for x in p.axes] == [Panel, Panel] and p.axes[0].metrics == ["loss", "acc"]
+    assert all(type(x) is Axes for x in p.axes) and p.axes[0].metrics == ["loss"]
     left, right, lr = p["loss"], p["acc"], p["lr"]
-    assert isinstance(left, _Axis) and not left._right and right._right and left.panel.spec is p.axes[0].spec
-    assert right.metrics == ["acc"] and lr.panel.spec is p.axes[1].spec
-    assert repr(p.axes[0]) == "Panel(0: loss | acc)"
-    with pytest.raises(AssertionError):
-        p.axes[1].right  # no metrics after '|'
+    assert all(type(x) is Axes for x in (left, right, lr))
+    assert left == p.axes[0] and right == p.axes[0].twinx() and lr == p.axes[1], "the same Axes, however it is reached"
+    assert right.metrics == ["acc"] and right.spec is left.spec, "twins share the panel"
+    assert repr(left) == "Axes(0: loss)" and repr(right) == "Axes(0 (right): acc)"
+    right.set_title("shared")  # a panel-wide setting, from either twin
+    assert left.spec["title"] == "shared"
+    right.set_ylim(0, 1)  # a y-axis setting stays on its side
+    assert left.spec["ylim"] is None and left.spec["ylim2"] == (0.0, 1.0)
 
 
 def test_matplotlib_named_setters_go_to_the_right_axis():
@@ -60,7 +65,7 @@ def test_one_sided_limit_pins_one_end_and_autoscales_the_other():
         p.log(step, loss=5.0 - step / 5, acc=0.2 + step / 50)
     p["loss"].set_ylim(bottom=0)
     p["acc"].set_ylim(top=1)
-    fig = p.figure()
+    fig = p.snapshot()
     ax, ax2 = fig.axes[0], fig.axes[1]
     assert ax.get_ylim()[0] == 0 and 5.0 <= ax.get_ylim()[1] < 6, "bottom pinned, top follows the data"
     assert ax2.get_ylim()[1] == 1 and 0.1 < ax2.get_ylim()[0] <= 0.2, "top pinned, bottom follows the data"
@@ -74,7 +79,7 @@ def test_setters_pass_matplotlib_kwargs_through_and_check_them_early():
     p["acc"].set_ylabel("accuracy", color="tab:orange")
     p["loss"].set_yscale("symlog", linthresh=0.1)
     p.axes[0].set_xscale("log")
-    fig = p.figure()
+    fig = p.snapshot()
     ax, ax2 = fig.axes[0], fig.axes[1]
     assert ax.get_title(loc="left") == "training" and ax.title.get_text() == ""
     assert ax2.yaxis.label.get_color() == "tab:orange"
@@ -127,11 +132,11 @@ def test_the_plot_is_the_figure():
     p.log(0, loss=1.0, acc=0.5)
     p.suptitle("run 3", fontsize=14)
     p.supxlabel("examples")
-    fig = p.figure()
+    fig = p.snapshot()
     assert fig._suptitle.get_text() == "run 3" and fig._suptitle.get_fontsize() == 14
     assert fig._supxlabel.get_text() == "examples"
     assert [ax.get_title() for ax in fig.axes if ax.get_visible()] == ["loss", "acc"], "panel titles untouched"
-    for name in ("set_title", "set_xlabel", "set_ylim", "axhline", "axvline", "panels"):
+    for name in ("set_title", "set_xlabel", "set_ylim", "axhline", "axvline", "panels", "figure"):
         assert not hasattr(p, name), f"{name} would act on every panel; Figure has no such method"
 
 
@@ -163,9 +168,11 @@ def test_plot_takes_fmt_strings_and_line2d_kwargs():
     ax.lines[0].set_color("k")  # Axes.lines
     for step in range(3):
         plot.log(step, loss=1.0 / (step + 1))
-    drawn = plot.figure().axes[0].get_lines()[0]
+    drawn = plot.snapshot().axes[0].get_lines()[0]
     assert (drawn.get_color(), drawn.get_linestyle(), drawn.get_linewidth(), drawn.get_alpha(), drawn.get_marker()) == ("k", "--", 3, 0.5, "o")
-    assert [t.get_text() for t in plot.figure().axes[0].get_legend().get_texts()] == ["train loss"]
+    assert plot.snapshot().axes[0].get_legend() is None, "one curve: no legend unless asked for"
+    ax.legend(loc="upper right")
+    assert [t.get_text() for t in plot.snapshot().axes[0].get_legend().get_texts()] == ["train loss"]
     with pytest.raises(AttributeError, match="colr"):
         ax.plot("loss", colr="r")
     with pytest.raises(AssertionError, match="log()"):
@@ -185,10 +192,10 @@ def test_two_names_are_matplotlibs_x_and_y_so_they_raise():
 def test_underscore_labels_stay_out_of_the_legend():
     p = LivePlot("loss | acc", progress=False)
     p.log(0, loss=1.0, acc=0.5)
-    p["acc"].panel.right.plot("acc", label="_hidden")
+    p["acc"].plot("acc", label="_hidden")
     p["loss"].axhline(0.5)  # unlabelled: no entry, as in matplotlib
     p["loss"].axhline(0.2, label="target")
-    fig = p.figure()
+    fig = p.snapshot()
     assert [t.get_text() for t in fig.axes[0].get_legend().get_texts()] == ["loss", "target"]
 
 
@@ -200,7 +207,44 @@ def test_figure_reflects_setters():
     p["acc"].set_ylabel("accuracy")
     p.axes[0].set_title("hello")
     p.axes[0].axvline(2, label="two")
-    fig = p.figure()
+    fig = p.snapshot()
     ax, ax2 = fig.axes[0], fig.axes[1]
     assert ax.get_title() == "hello" and ax2.get_ylabel() == "accuracy" and ax2.get_ylim() == (0.0, 1.0)
     assert "two" in [t.get_text() for t in ax.get_legend().get_texts()], "a labelled axvline is in the legend"
+
+
+def test_log_detaches_tensors_that_want_grad():
+    torch = pytest.importorskip("torch")
+    p = LivePlot("loss", progress=False)
+    w = torch.ones(1, requires_grad=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # torch warns when a tensor that wants grad is turned into a number
+        p.log(0, loss=(w * 2).sum())
+    assert p.data["loss"][1] == [2.0]
+
+
+def test_a_metric_no_ax_plot_declared_warns_in_a_subplots_grid():
+    plot, (ax_loss, ax_lr) = LivePlot.subplots(1, 2, progress=False)
+    ax_loss.plot("loss")
+    ax_lr.plot("lr")
+    with pytest.warns(UserWarning, match=r"'los'.*A typo\?"):
+        plot.log(0, los=1.0, lr=0.1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        plot.log(1, loss=1.0, los=1.0)  # declared, or already warned about: quiet
+        plot["acc"].set_ylim(0, 1)  # asked for by name: deliberate, so no warning
+
+
+def test_savefig_and_a_notice_outside_a_notebook(tmp_path, monkeypatch):
+    import liveplot.liveplot as lp
+
+    monkeypatch.setattr(lp, "_said_nothing_is_drawn", False)
+    with pytest.warns(UserWarning, match="not in a notebook"):
+        p = LivePlot("loss", progress=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        LivePlot("loss", progress=False)  # once per process is enough
+    for step in range(5):
+        p.log(step, loss=1.0 / (step + 1))
+    p.savefig(tmp_path / "run.png", dpi=50)
+    assert (tmp_path / "run.png").stat().st_size > 1000

@@ -4,29 +4,23 @@ import time
 import pytest
 
 from liveplot import LivePlot
-from liveplot.liveplot import _FigureRenderer, _normalise_axhlines, _normalise_panel
+from liveplot.liveplot import _FigureRenderer, _normalise_panel
 
 LAYOUT = (3, None, None, (4, 3), 50, "step")
 PNG = b"\x89PNG\r\n\x1a\n"
 
 
-def test_normalise_axhlines():
-    assert _normalise_axhlines(None) == []
-    assert _normalise_axhlines({"uniform": 10.8, "entropy": 7}) == [{"y": 10.8, "label": "uniform"}, {"y": 7.0, "label": "entropy"}]
-    assert _normalise_axhlines([0.5, 1]) == [{"y": 0.5, "label": "0.5"}, {"y": 1.0, "label": "1"}]
-    assert _normalise_axhlines([dict(y=2, label="two", color="red", linestyle="-")]) == [{"y": 2.0, "label": "two", "color": "red", "linestyle": "-"}]
-    p = _normalise_panel({"metrics": ["loss"], "secondary": ["acc"], "axhlines": {"target": 0.1}, "axhlines2": [0.9]})
-    assert p["axhlines"] == [{"y": 0.1, "label": "target"}] and p["axhlines2"] == [{"y": 0.9, "label": "0.9"}]
+def test_panels_are_strings_and_the_setters_do_the_rest():
+    with pytest.raises(TypeError, match="panels are given as strings"):
+        LivePlot("loss", {"metrics": ["acc"], "ylim": (0, 1)})
     with pytest.raises(AssertionError):
-        _normalise_panel({"metrics": ["loss"], "hlines": {"a": 1}})  # the old / misspelt key is caught
-    with pytest.raises(AssertionError):
-        _normalise_axhlines([dict(label="no y")])
+        _normalise_panel({"metrics": ["loss"], "hlines": {"a": 1}})  # an unknown key in an internal spec is caught
 
 
 def test_renderer_draws_reference_lines_with_matplotlib_kwargs():
     panels = [_normalise_panel({"metrics": ["loss"], "secondary": ["acc"],
                                 "axhlines": [dict(y=2.3, label="uniform", color="red", linestyle="-")],
-                                "axhlines2": {"solved": 0.95},
+                                "axhlines2": [{"y": 0.95, "label": "solved"}],
                                 "axvlines": [{"x": 5, "label": "lr drop", "color": "blue"}]}),
               _normalise_panel("lr")]
     r = _FigureRenderer(panels, xlim=None, layout=LAYOUT)
@@ -72,7 +66,8 @@ class _FakeHandle:
 def test_process_mode_reference_lines(monkeypatch):
     h = _FakeHandle()
     monkeypatch.setattr(LivePlot, "_make_display_handle", staticmethod(lambda: h))
-    with LivePlot({"metrics": ["loss"], "axhlines": {"uniform": math.log(50257)}}, refresh_seconds=0.1) as p:
+    with LivePlot("loss", refresh_seconds=0.1) as p:
+        p["loss"].axhline(math.log(50257), label="uniform")
         t0 = time.monotonic()
         while not h.frames and time.monotonic() - t0 < 90:  # child startup
             p.log(0, loss=11.0)

@@ -149,7 +149,8 @@ def wait_for_first_frame(p, h, timeout=90):
 
 
 def test_process_mode_end_to_end(fake_notebook):
-    with LivePlot("loss", {"metrics": ["acc"], "ylim": (0, 1)}, total=10_000, refresh_seconds=0.2) as p:
+    with LivePlot("loss", "acc", total=10_000, refresh_seconds=0.2) as p:
+        p["acc"].set_ylim(0, 1)
         assert p.mode == "process"
         wait_for_first_frame(p, fake_notebook)
         n_warmup, n_frames0 = len(p.data["loss"][0]), len(fake_notebook.frames)

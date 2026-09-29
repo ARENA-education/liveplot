@@ -25,7 +25,7 @@ Metrics are discovered from what you log. With no layout given they all share on
 plot = LivePlot(range(num_steps), "loss", "return | entropy", "lossD lossG | acc")
 ```
 
-Each string is one panel. Names separated by spaces share the left y-axis; names after a `|` go on a right-hand y-axis. Anything you log that no string mentions gets a panel of its own. Every panel has a legend.
+Each string is one panel. Names separated by spaces share the left y-axis; names after a `|` go on a right-hand y-axis. Anything you log that no string mentions gets a panel of its own. A panel with two or more curves has a legend; one with a single curve is named by its title.
 
 For nested loops, create the plot once and wrap the inner loop with `plot(...)`; the count, and so the x-axis, continues across epochs and you get one tqdm bar per epoch, as with tqdm:
 
@@ -79,15 +79,15 @@ Interrupting the cell is safe. Jupyter sends its interrupt to every process the 
 | | |
 |---|---|
 | `total`, `initial`, `unit`, `unit_scale` | tqdm's arguments, with tqdm's meaning; they define the x-axis (see above) |
-| `refresh_seconds` | minimum time between redraws (default 1.0). Points arriving in between are batched into the next frame. `0` redraws whenever new data arrives, as fast as rendering allows (roughly 0.15 s per frame at a few thousand points), and costs nothing while idle. |
+| `refresh_seconds` | minimum time between redraws (default 0.2). Points arriving in between are batched into the next frame. `0` redraws whenever new data arrives, as fast as rendering allows (roughly 0.15 s per frame at a few thousand points), and costs nothing while idle. |
 | `max_cols`, `rows`, `cols` | grid shape; `max_cols=None` gives a near-square grid |
 | `progress`, `desc` | disable the bundled tqdm bars, or give the single-loop form's bar a description |
-| `cell_size`, `dpi` | size of each panel in inches, and PNG resolution |
+| `figsize`, `cell_size`, `dpi` | the whole figure's size in inches, as matplotlib means it, however many panels it ends up with; without it, each panel is `cell_size` (default `(5, 3.5)`). `dpi` is the PNG resolution. |
 | `record` | `True` keeps every rendered frame in `plot.frames`; a path such as `"run.gif"` also writes an animated GIF at `finish()`. `plot.save_gif(path, speedup=1.0)` does it on demand. Works outside a notebook too. |
 
 ## Titles, labels, limits: matplotlib's names
 
-The plot is the figure and its panels are the Axes, configured with matplotlib's own names and signatures, before or during the loop:
+The plot is the figure and each panel's y-axes are matplotlib Axes, configured with matplotlib's own names and signatures, before or during the loop:
 
 ```python
 plot = LivePlot(loader, "loss | acc", "lr")
@@ -102,18 +102,16 @@ plot.axes[0].set_xlim(0, 10_000)
 plot.axes[0].set_xscale("log")
 
 plot.suptitle("run 3")                         # Figure.suptitle / supxlabel / supylabel
-plot.set_all(xlabel="examples", smooth=0.9)    # Panel.set on every panel, including ones created later
+plot.set_all(xlabel="examples", smooth=0.9)    # Axes.set on every panel, including ones created later
 ```
 
-`plot[metric]` finds the right-hand axis too, so there is no separate spelling for it; `plot.axes[i].left` / `.right` name the two axes explicitly. Everything takes matplotlib's name and signature: `set_title`, `set_xlabel`, `set_ylabel` (with `fontdict`, `loc`, `pad` / `labelpad` and text kwargs), `set_xlim` / `set_ylim` (two arguments, a tuple, or one end: `bottom=`, `top=`, `left=`, `right=`, `ymin=`, ...), `set_xscale` / `set_yscale` (with the scale's kwargs), `axhline` / `axvline`, `legend(**kwargs)` and `set(**kwargs)`; the panel's setters are reachable from an axis as they would be on an `Axes`. Each call is first tried on a scratch matplotlib `Axes`, so a misspelt keyword raises matplotlib's own error on the line that made it, not later in the renderer. A setter called mid-run just triggers a re-layout on the next frame.
+There is one `Axes` type, as in matplotlib: `plot.axes[i]` and `subplots` give a panel's main axis, `ax.twinx()` its right-hand one, and `plot[metric]` whichever of them holds that metric. A y-axis has its own curves, `set_ylabel`, `set_ylim`, `set_yscale` and `axhline`; the title, x-axis, `axvline`, legend and smoothing belong to the panel, so setting them on either twin sets them for both. Everything takes matplotlib's name and signature: `set_title`, `set_xlabel`, `set_ylabel` (with `fontdict`, `loc`, `pad` / `labelpad` and text kwargs), `set_xlim` / `set_ylim` (two arguments, a tuple, or one end: `bottom=`, `top=`, `left=`, `right=`, `ymin=`, ...), `set_xscale` / `set_yscale` (with the scale's kwargs), `axhline` / `axvline`, `legend(**kwargs)` and `set(**kwargs)`. Each call is first tried on a scratch matplotlib `Axes`, so a misspelt keyword raises matplotlib's own error on the line that made it, not later in the renderer. A setter called mid-run just triggers a re-layout on the next frame.
 
 The plot-level object is the figure, not every panel at once: `plot.set_title` does not exist (use `plot.suptitle`, or `plot.axes[0].set_title`). To set something on every panel, loop as you would over `fig.axes` -- `for ax in plot.axes: ax.set(...)` -- or use `plot.set_all(...)`, which also reaches panels a metric logged later creates.
 
-The dict form, `{"metrics": ["acc"], "ylim": (0, 1), ...}`, is still accepted in the layout list but the setters are the intended way.
+`plot.savefig("run.png")` saves the plot as it stands, like `Figure.savefig`, and `plot.snapshot()` returns it as a matplotlib Figure to tweak or add to; both are built independently of the live renderer and work in or out of a notebook. Outside a notebook nothing is drawn live, and liveplot says so once rather than leaving you wondering; `plot.data` still collects everything.
 
-`plot.figure()` returns a matplotlib Figure of the plot as it stands, built independently of the live renderer, for `fig.savefig(...)`, a title, or any other tweak.
-
-`plot.log` accepts keywords, an explicit step (`plot.log(step, loss=...)`), or a dict (`plot.log(step, {"loss": ...})`). Values can be anything `float()` accepts, including one-element tensors. `plot.data` holds the full history as `{metric: (steps, values)}` and `plot.latest` the most recent value of each.
+`plot.log` accepts keywords, an explicit step (`plot.log(step, loss=...)`), or a dict (`plot.log(step, {"loss": ...})`). Values can be anything `float()` accepts, including one-element tensors, which are detached first, so `plot.log(loss=loss)` is fine without `.item()`. `plot.data` holds the full history as `{metric: (steps, values)}` and `plot.latest` the most recent value of each.
 
 ## Reference lines
 
@@ -159,8 +157,11 @@ matplotlib's arguments -- `sharex`, `sharey`, `squeeze`, `width_ratios`, `height
 matplotlib does (one panel for 1x1, 1-d for a single row or column, 2-d otherwise), so
 `axes[0, 1]`, `axes.flat` and `axes.flatten()` all work. `figsize` is the whole figure in inches, as matplotlib means it, and
 `width_ratios` / `height_ratios` are matplotlib's too: `width_ratios=(1, 1.25)` gives a wide grid
-of samples more room. `ax.legend(**kwargs)` goes to `Axes.legend`, so a crowded legend can move
-off the curves: `ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncols=3)`.
+of samples more room. `ax.legend(**kwargs)` goes to `Axes.legend`: it shows the legend on a
+single-curve panel, or moves a crowded one off the curves:
+`ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncols=3)`. A metric you log in a
+`subplots` grid without an `ax.plot()` for it still gets drawn (on the first free curve panel), with
+a warning, since that is usually a typo.
 
 A training loop that already drives its own bar, one for the whole run rather than one per epoch,
 keeps its shape: `plot.update()` and `plot.set_description(...)` are tqdm's manual-mode methods,
