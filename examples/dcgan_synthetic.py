@@ -123,11 +123,15 @@ class SyntheticDCGANTrainer:
         self.plot, (ax_loss, self.ax_samples) = LivePlot.subplots(
             1, 2, total=self.total_steps, figsize=(12, 4.5), **plot_kwargs
         )
-        ax_loss.plot("lossD", "lossG")
+        ax_loss.plot("lossD")
+        ax_loss.plot("lossG")
         ax_loss.set_smooth(0.6)  # per-batch GAN losses are noisy: wandb's smoothing, raw values faded behind
-        ax_loss.axhline(math.log(4), "ln 4: lossD, D at chance")  # where lossD starts, and where a perfect G ends
-        ax_loss.axhline(math.log(2), "ln 2: lossG, D at chance", linestyle=":")  # ... and the same for lossG
-        ax_loss.twinx().plot("D(x)", "D(G(z))").set_ylim(0, 1)
+        ax_loss.axhline(math.log(4), label="ln 4: lossD, D at chance")  # where lossD starts, and where a perfect G ends
+        ax_loss.axhline(math.log(2), label="ln 2: lossG, D at chance", linestyle=":")  # ... and the same for lossG
+        ax_d = ax_loss.twinx()
+        ax_d.plot("D(x)")
+        ax_d.plot("D(G(z))")
+        ax_d.set_ylim(0, 1)
         ax_loss.set_title("losses (left), discriminator outputs (right)")
         ax_loss.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncols=3)  # under the panel, off the curves
         self.ax_samples.set_title("netG(fixed_noise)")

@@ -69,13 +69,15 @@ def test_renderer_smooths_and_fades_raw():
     assert r.raw_lines["loss"].get_alpha() == 0.25 and r.lines["loss"].get_alpha() is None
     ys, raw = r.lines["loss"].get_ydata(), r.raw_lines["loss"].get_ydata()
     assert len(ys) == 200 and np.std(np.diff(ys)) < np.std(np.diff(raw))
-    assert [t.get_text() for t in ax.get_legend().get_texts()] == ["loss"], "the raw line has no legend entry"
+    assert ax.get_legend_handles_labels()[1] == ["loss"], "the raw line has no legend entry"
+    assert ax.get_legend() is None, "one curve: the title names it, no legend needed"
     assert r.lines["acc"].axes.get_yscale() == "log"
     assert "acc" not in r.raw_lines and len(r.lines["acc"].axes.get_lines()) == 1
 
 
 def test_plot_wide_default_and_override():
-    p = LivePlot("loss", {"metrics": ["acc"], "smooth": 0}, smooth=0.9)
+    p = LivePlot("loss", "acc", smooth=0.9)
+    p["acc"].set_smooth(0)
     p.log(0, loss=1.0, acc=0.5, lr=1e-3)  # lr is discovered -> gets the default too
     assert [pn["smooth"] for pn in p._specs] == [0.9, 0, 0.9]
     q = LivePlot()

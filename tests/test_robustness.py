@@ -15,7 +15,8 @@ def test_bad_smooth_weight_is_caught_where_it_is_given():
             LivePlot("loss", smooth=bad, progress=False)
         with pytest.raises(AssertionError, match="weight in"):
             _normalise_panel({"metrics": ["loss"], "smooth": bad})
-    p = LivePlot("loss", {"metrics": ["acc"], "smooth": 0}, smooth=0.9, progress=False)  # the legal range still passes
+    p = LivePlot("loss", "acc", smooth=0.9, progress=False)  # the legal range still passes
+    p["acc"].set_smooth(0)
     assert [pn["smooth"] for pn in p._specs] == [0.9, 0]
 
 
@@ -35,18 +36,18 @@ def test_a_renderer_that_cannot_be_built_does_not_break_the_loop(monkeypatch):
 
 def test_set_title_survives_a_newly_discovered_metric():
     p = LivePlot(progress=False)
-    p.set_title("my run")
+    p.set_all(title="my run")
     p.log(0, loss=1.0)
     p.log(1, acc=0.5)  # joins the shared panel; used to reset the title to "loss / acc"
-    assert p.panels[0].spec["title"] == "my run"
-    p.panels[0].set_title("chosen later")
+    assert p.axes[0].spec["title"] == "my run"
+    p.axes[0].set_title("chosen later")
     p.log(2, lr=1e-3)
-    assert p.panels[0].spec["title"] == "chosen later"
+    assert p.axes[0].spec["title"] == "chosen later"
     q = LivePlot(progress=False)  # a title nobody chose still tracks the metrics
     q.log(0, loss=1.0)
-    assert q.panels[0].spec["title"] == "loss"
+    assert q.axes[0].spec["title"] == "loss"
     q.log(1, acc=0.5)
-    assert q.panels[0].spec["title"] == "loss / acc"
+    assert q.axes[0].spec["title"] == "loss / acc"
 
 
 def test_tqdm_kwargs_reach_the_bar_without_colliding():

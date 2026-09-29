@@ -2,30 +2,30 @@ from liveplot import LivePlot
 
 
 def test_figure_reflects_current_state(tmp_path):
-    p = LivePlot("loss | acc", {"metrics": ["lr"], "smooth": 0.9}, total=100, unit="examples", unit_scale=10, progress=False)
+    p = LivePlot("loss | acc", "lr", total=100, unit="examples", unit_scale=10, progress=False)
+    p["lr"].set_smooth(0.9)
     for step in range(20):
         p.log(step * 10, loss=1.0 / (step + 1), acc=step / 20, lr=1e-3)
-    p.axhline(0.2, "target", metric="loss")
-    p.axvline(100, "halfway")
-    fig = p.figure()
+    p["loss"].axhline(0.2, label="target")
+    p.axes[0].axvline(100, label="halfway")
+    fig = p.snapshot()
     axes = [ax for ax in fig.axes if ax.get_visible()]
     assert len(axes) == 3  # panel 1 left + right axis, panel 2
     ax_loss = axes[0]
     labels = [t.get_text() for t in ax_loss.get_legend().get_texts()]
-    assert labels == ["loss", "acc", "target"]
+    assert labels == ["loss", "acc", "target", "halfway"]
     assert ax_loss.get_xlim() == (0, 1000) and ax_loss.get_xlabel() == "examples"
     assert list(ax_loss.get_lines()[0].get_xdata()) == [step * 10 for step in range(20)]
-    assert any(t.get_text().strip() == "halfway" for t in ax_loss.texts)
     out = tmp_path / "run.png"
     fig.savefig(out)
     assert out.stat().st_size > 1000
     p.log(200, loss=0.01)  # a later figure() sees the new point; the old figure is untouched
-    fig2 = p.figure()
+    fig2 = p.snapshot()
     assert len([ax for ax in fig2.axes if ax.get_visible()][0].get_lines()[0].get_xdata()) == 21
     assert len(ax_loss.get_lines()[0].get_xdata()) == 20
 
 
 def test_figure_before_any_data():
     p = LivePlot(progress=False)
-    fig = p.figure()
+    fig = p.snapshot()
     assert fig.axes and fig.axes[0].get_title() == "waiting for data…"

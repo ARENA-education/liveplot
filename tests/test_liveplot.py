@@ -82,7 +82,7 @@ def test_x_axis_follows_tqdm_counting():
         r.log(loss=1.0)
         xs.append(r.step)
     assert xs == [0, 128, 256] and r.data["loss"][0] == xs and r.x_range == (0, 384)
-    assert r._layout[-1] == "examples", "default x label is the unit"
+    assert r._layout[5] == "examples", "default x label is the unit"
 
     s = LivePlot(range(3), progress=False)  # explicit step is per call, like wandb's step=
     for i in s:
@@ -149,7 +149,8 @@ def wait_for_first_frame(p, h, timeout=90):
 
 
 def test_process_mode_end_to_end(fake_notebook):
-    with LivePlot("loss", {"metrics": ["acc"], "ylim": (0, 1)}, total=10_000, refresh_seconds=0.2) as p:
+    with LivePlot("loss", "acc", total=10_000, refresh_seconds=0.2) as p:
+        p["acc"].set_ylim(0, 1)
         assert p.mode == "process"
         wait_for_first_frame(p, fake_notebook)
         n_warmup, n_frames0 = len(p.data["loss"][0]), len(fake_notebook.frames)

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from liveplot import LivePlot
-from liveplot.liveplot import Panel, _FigureRenderer, _normalise_panel, _PanelGrid
+from liveplot.liveplot import Axes, _FigureRenderer, _normalise_panel
 
 LAYOUT = (3, None, None, (4, 3), 50, "step")
 PNG = b"\x89PNG\r\n\x1a\n"
@@ -18,31 +18,39 @@ def rng_images(n=4, c=1, h=8, w=8, seed=0):
 
 def test_subplots_squeezes_like_matplotlib():
     plot, ax = LivePlot.subplots(progress=False)
-    assert isinstance(ax, Panel), "1x1 -> the panel itself"
+    assert isinstance(ax, Axes), "1x1 -> the Axes itself"
     plot, axs = LivePlot.subplots(1, 3, progress=False)
-    assert isinstance(axs, list) and len(axs) == 3, "a single row -> a flat list, so it unpacks"
+    assert isinstance(axs, np.ndarray) and axs.shape == (3,), "a single row -> 1-d, so it unpacks"
     plot, axs = LivePlot.subplots(3, 1, progress=False)
-    assert isinstance(axs, list) and len(axs) == 3
+    assert axs.shape == (3,)
     plot, axs = LivePlot.subplots(2, 2, progress=False)
-    assert isinstance(axs, _PanelGrid) and axs.shape == (2, 2) and len(axs.flat) == 4
+    assert isinstance(axs, np.ndarray) and axs.shape == (2, 2), "a numpy array of panels, as matplotlib returns"
+    assert len(axs.flatten()) == len(axs.ravel()) == len(list(axs.flat)) == 4
     assert axs[0, 1].spec is axs[0][1].spec, "matplotlib's two spellings agree"
-    assert axs[1, 0].spec is plot.panels[2].spec, "row-major, as in matplotlib"
+    assert axs[1, 0].spec is plot.axes[2].spec, "row-major, as in matplotlib"
     plot, grid = LivePlot.subplots(1, 2, squeeze=False, progress=False)
-    assert isinstance(grid, _PanelGrid) and grid.shape == (1, 2)
+    assert grid.shape == (1, 2)
     with pytest.raises(AssertionError, match="1x1 grid"):
         LivePlot.subplots(0, 2, progress=False)
 
 
 def test_figsize_is_the_whole_figure_as_matplotlib_means_it():
-    plot, _ = LivePlot.subplots(2, 4, figsize=(12, 6), progress=False)
-    assert plot._layout[3] == (3.0, 3.0), "cell_size is figsize / grid"
+    plot, axs = LivePlot.subplots(2, 4, figsize=(12, 6), progress=False)
+    axs[0, 0].plot("loss")
+    plot.log(0, loss=1.0)
+    assert tuple(plot.snapshot().get_size_inches()) == (12, 6)
     assert plot._layout[1:3] == (2, 4), "the grid is fixed at what was asked for"
+    grown = LivePlot("loss", figsize=(8, 3), progress=False)  # the constructor takes figsize too:
+    grown.log(0, loss=1.0, acc=0.5, lr=0.1)                   # the whole figure, however many panels appear
+    assert tuple(grown.snapshot().get_size_inches()) == (8, 3)
 
 
 def test_plot_assigns_metrics_and_twinx_gives_the_right_axis():
     plot, (ax_loss, ax_lr) = LivePlot.subplots(1, 2, progress=False)
-    returned = ax_loss.plot("lossD", "lossG")
-    assert returned.plot("lossD") is returned, "chainable, and a repeat is not a duplicate"
+    returned = ax_loss.plot("lossD")
+    assert isinstance(returned, list) and len(returned) == 1, "a one-element list of lines, as matplotlib returns"
+    ax_loss.plot("lossG")
+    ax_loss.plot("lossD")  # a repeat is not a duplicate
     ax_loss.twinx().plot("D(x)")
     ax_lr.plot("lr")
     assert ax_loss.spec["metrics"] == ["lossD", "lossG"] and ax_loss.spec["secondary"] == ["D(x)"]
@@ -50,21 +58,25 @@ def test_plot_assigns_metrics_and_twinx_gives_the_right_axis():
     plot.log(0, lossD=1.0, lossG=0.5, lr=1e-3, **{"D(x)": 0.6})
     assert len(plot._specs) == 2, "subplots() fixed the grid: no third panel appeared"
     assert plot["D(x)"]._right and plot["lossD"]._right is False
-    with pytest.raises(AssertionError, match="metric names, not data"):
+    with pytest.raises(AssertionError, match="not data"):
         ax_lr.plot([1, 2, 3])
+    with pytest.raises(ValueError, match="already drawn"):
+        ax_lr.plot("lossD")
 
 
 def test_a_metric_nobody_declared_joins_a_panel_rather_than_growing_the_grid():
     plot, (ax_loss, ax_img) = LivePlot.subplots(1, 2, progress=False)
     ax_loss.plot("lossD")
     ax_img.imshow(rng_images())
-    plot.log(0, lossD=1.0, surprise=2.0)
+    with pytest.warns(UserWarning, match="A typo"):
+        plot.log(0, lossD=1.0, surprise=2.0)
     assert len(plot._specs) == 2, "the grid subplots() promised is not resized"
     assert plot._specs[0]["metrics"] == ["lossD", "surprise"], "it lands on the curve panel"
     # with an empty curve panel available, that one is preferred
     plot2, (a, b) = LivePlot.subplots(1, 2, progress=False)
     a.plot("loss")
-    plot2.log(0, loss=1.0, other=2.0)
+    with pytest.warns(UserWarning, match="A typo"):
+        plot2.log(0, loss=1.0, other=2.0)
     assert (plot2._specs[0]["metrics"], plot2._specs[1]["metrics"]) == (["loss"], ["other"])
     # a grid of nothing but image panels has nowhere to put it
     plot3, ax = LivePlot.subplots(progress=False)
@@ -121,29 +133,20 @@ def test_renderer_draws_images_and_keeps_them_through_a_relayout():
     assert len(r.hist["loss"][0]) == 5, "and the curve history survives as before"
 
 
-def test_axvline_skips_image_panels():
-    panels = [_normalise_panel({"metrics": ["loss"]}), _normalise_panel({"kind": "image"})]
-    r = _FigureRenderer(panels, xlim=None, layout=LAYOUT)
-    r.add_image(1, np.zeros((8, 8), np.uint8))
-    r.add_axvline({"x": 2, "label": "lr drop"})
-    assert any(line.get_linestyle() == ":" for line in r.axes[0].get_lines())
-    assert not r.image_axes[1].get_lines(), "a vertical line across a picture means nothing"
-
-
 def test_figure_includes_the_image():
     plot, (ax_loss, ax_img) = LivePlot.subplots(1, 2, total=20, progress=False)
     ax_loss.plot("loss")
     for step in range(5):
         plot.log(step, loss=1.0 / (step + 1))
     ax_img.imshow(rng_images(n=4, c=3), rows=2, vmin=0, vmax=1)
-    fig = plot.figure()
+    fig = plot.snapshot()
     assert sum(len(ax.images) for ax in fig.axes) == 1
     assert sum(len(ax.get_lines()) for ax in fig.axes) == 1
     img = next(im for ax in fig.axes for im in ax.images)
     assert img.get_array().shape == (16, 16, 3), "two rows of two 8x8 RGB images"
     assert img.axes.get_title() == "step 4", "an untitled image panel says when it was drawn"
     ax_img.set_title("samples")
-    assert next(im for ax in plot.figure().axes for im in ax.images).axes.get_title() == "samples (step 4)"
+    assert next(im for ax in plot.snapshot().axes for im in ax.images).axes.get_title() == "samples (step 4)"
 
 
 class _FakeHandle:
@@ -182,7 +185,8 @@ def _colour_images_are_safe_here() -> bool:
 def test_process_mode_curves_beside_images(fake_notebook):
     """The DCGAN shape: curves every step, samples every so often, one figure, one output cell."""
     plot, (ax_loss, ax_img) = LivePlot.subplots(1, 2, total=200, refresh_seconds=0.1, figsize=(8, 3), dpi=40)
-    ax_loss.plot("lossD", "lossG")
+    ax_loss.plot("lossD")
+    ax_loss.plot("lossG")
     ax_img.set_title("generator samples")
     assert plot.mode == "process"
     t0 = time.monotonic()
@@ -206,12 +210,13 @@ def test_process_mode_curves_beside_images(fake_notebook):
 def test_width_ratios_and_legend_placement():
     """matplotlib's own names: subplots(width_ratios=...) and ax.legend(**kwargs)."""
     plot, (ax_loss, ax_img) = LivePlot.subplots(1, 2, width_ratios=(1, 2), progress=False)
-    ax_loss.plot("lossD", "lossG")
+    ax_loss.plot("lossD")
+    ax_loss.plot("lossG")
     ax_loss.twinx().plot("D(x)")
     ax_loss.legend(loc="upper center", ncols=3)
     ax_img.imshow(rng_images())
     plot.log(0, lossD=1.0, lossG=0.5, **{"D(x)": 0.5})
-    fig = plot.figure()
+    fig = plot.snapshot()
     axes = [ax for ax in fig.axes if ax.get_visible()]
     ax_curves, ax_image = axes[0], axes[1]
     assert ax_image.get_subplotspec().get_gridspec().get_width_ratios() == [1, 2]
@@ -220,6 +225,35 @@ def test_width_ratios_and_legend_placement():
     assert legend._ncols == 3 and legend._loc == 9, "kwargs reached Axes.legend (9 = upper center)"
     with pytest.raises(AssertionError, match="one entry per column"):
         LivePlot.subplots(1, 2, width_ratios=(1, 2, 3), progress=False)
+
+
+def test_sharex_gridspec_kw_and_subplot_kw_are_matplotlibs():
+    plot, axs = LivePlot.subplots(2, 1, sharex=True, gridspec_kw={"height_ratios": [2, 1]},
+                                  subplot_kw={"xlabel": "examples"}, progress=False)
+    axs[0].plot("loss")
+    axs[1].plot("lr")
+    plot.log(0, loss=1.0, lr=0.1)
+    plot.log(10, loss=0.5, lr=0.05)
+    a, b = [ax for ax in plot.snapshot().axes if ax.get_visible()]
+    assert a.get_shared_x_axes().joined(a, b)
+    assert a.get_subplotspec().get_gridspec().get_height_ratios() == [2, 1]
+    assert a.get_xlabel() == b.get_xlabel() == "examples"
+    with pytest.raises(AssertionError, match="both as parameter"):
+        LivePlot.subplots(1, 2, width_ratios=(1, 2), gridspec_kw={"width_ratios": [1, 1]}, progress=False)
+    with pytest.raises(AssertionError, match="sharey"):
+        LivePlot.subplots(1, 2, sharey="columns", progress=False)
+
+
+def test_imshow_passes_matplotlib_kwargs():
+    plot, ax = LivePlot.subplots(progress=False)
+    ax.imshow(rng_images(), interpolation="bilinear")
+    assert plot.snapshot().axes[0].images[0].get_interpolation() == "bilinear"
+    ax.imshow(rng_images())  # back to liveplot's default, crisp pixels
+    assert plot.snapshot().axes[0].images[0].get_interpolation() == "nearest"
+    with pytest.raises(ValueError):
+        ax.imshow(rng_images(), interpolation="blurry")
+    with pytest.raises(AssertionError, match="scales the pixels itself"):
+        ax.imshow(rng_images(), norm="log")
 
 
 def test_update_drives_one_bar_across_epochs():
@@ -248,7 +282,7 @@ def test_image_panels_are_sized_to_their_picture():
     ax_loss.plot("loss")
     plot.log(0, loss=1.0)
     ax_img.imshow(rng_images(n=9, c=3))  # 3x3 of 8x8: square
-    fig = plot.figure()
+    fig = plot.snapshot()
     assert fig.get_size_inches()[0] == pytest.approx(12), "figsize is kept"
     ax_curves, ax_image = [ax for ax in fig.axes if ax.get_visible()]
     fig.canvas.draw()
@@ -256,7 +290,7 @@ def test_image_panels_are_sized_to_their_picture():
     assert box.width == pytest.approx(box.height, rel=0.02), "the picture fills its panel: no side margins"
     assert ax_curves.get_window_extent().width > 1.5 * box.width, "the curves take the room the picture doesn't need"
     ax_img.imshow(rng_images(n=8, c=3), griddim=(2, 4))  # a wide picture: the panel re-fits
-    box = [ax for ax in plot.figure().axes if ax.get_visible()][1]
+    box = [ax for ax in plot.snapshot().axes if ax.get_visible()][1]
     box.figure.canvas.draw()
     extent = box.get_window_extent()
     assert extent.width == pytest.approx(2 * extent.height, rel=0.02)

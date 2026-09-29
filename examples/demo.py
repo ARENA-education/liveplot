@@ -38,7 +38,8 @@ def slow(seconds=0.01):
 
 # %%
 # 1. The one-liner: wrap the range like tqdm, log keyword arguments. Metrics are discovered from
-#    what you log and, with no layout given, share a single panel with a legend. A tqdm bar sits
+#    what you log and, with no layout given, share a single panel (with a legend, once there are
+#    two or more). A tqdm bar sits
 #    under the plot with the latest values as its postfix.
 
 if MAIN:
@@ -108,8 +109,8 @@ if MAIN:
     plot = LivePlot("loss", "acc", total=epochs * len(loader))
     plot["acc"].set_ylim(0, 1)                  # plot[metric] is the y-axis holding that metric
     plot["acc"].set_ylabel("test accuracy")
-    plot.panels[0].set_title("training loss")
-    plot.set(xlabel="batches")                  # every panel, like Axes.set(**kwargs)
+    plot.axes[0].set_title("training loss")     # plot.axes, like Figure.axes
+    plot.set_all(xlabel="batches")              # every panel, including any created later
     for epoch in range(epochs):
         for batch in plot(loader, desc=f"epoch {epoch}"):
             plot.log(loss=math.exp(-plot.n / 60) + 0.05 * random.random())
@@ -131,8 +132,9 @@ if MAIN:
             if step >= 200:
                 plot.log(step, lr=1e-3 * (400 - step) / 200)
             if step == 200:
-                plot.axvline(label="lr decay starts")     # a vertical line on every panel, at the current x
-                plot["acc"].axhline(0.9, "target")        # a horizontal reference line on acc's axis
+                for ax in plot.axes:                      # a vertical line on every panel, at the current x
+                    ax.axvline(plot.step, label="lr decay starts")
+                plot["acc"].axhline(0.9, label="target")  # a horizontal reference line on acc's axis
             slow()
 
 # %%
@@ -182,8 +184,8 @@ if MAIN:
 
 # %%
 # 9. Images beside curves: LivePlot.subplots mirrors plt.subplots, and a panel can hold a picture
-#    instead of lines. `ax.plot("name", ...)` says which metrics live on an axis (matplotlib spells
-#    the same idea `ax.plot("name", data=d)`); `ax.imshow(tensor)` draws a batch as a grid and
+#    instead of lines. `ax.plot("name")` puts a metric on an axis (matplotlib's `ax.plot("name",
+#    data=d)`, with log() as the data), one per call; `ax.imshow(tensor)` draws a batch as a grid and
 #    replaces it on every call. This is the shape a GAN training loop wants: loss curves updating
 #    every step, generated samples every so often, in one figure.
 #
@@ -206,7 +208,8 @@ def fake_generator(step, rng, n=8, size=24):
 if MAIN:
     rng = np.random.default_rng(0)
     plot, (ax_loss, ax_samples) = LivePlot.subplots(1, 2, total=400, figsize=(11, 4))
-    ax_loss.plot("lossD", "lossG")
+    ax_loss.plot("lossD")
+    ax_loss.plot("lossG", "--")   # a format string, as in matplotlib
     ax_loss.twinx().plot("D(x)")  # matplotlib's own spelling for a right-hand axis
     ax_samples.set_title("generator samples")
 
