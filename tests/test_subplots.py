@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from liveplot import LivePlot
-from liveplot.liveplot import Panel, _FigureRenderer, _normalise_panel, _PanelGrid
+from liveplot.liveplot import Panel, _FigureRenderer, _normalise_panel
 
 LAYOUT = (3, None, None, (4, 3), 50, "step")
 PNG = b"\x89PNG\r\n\x1a\n"
@@ -20,15 +20,16 @@ def test_subplots_squeezes_like_matplotlib():
     plot, ax = LivePlot.subplots(progress=False)
     assert isinstance(ax, Panel), "1x1 -> the panel itself"
     plot, axs = LivePlot.subplots(1, 3, progress=False)
-    assert isinstance(axs, list) and len(axs) == 3, "a single row -> a flat list, so it unpacks"
+    assert isinstance(axs, np.ndarray) and axs.shape == (3,), "a single row -> 1-d, so it unpacks"
     plot, axs = LivePlot.subplots(3, 1, progress=False)
-    assert isinstance(axs, list) and len(axs) == 3
+    assert axs.shape == (3,)
     plot, axs = LivePlot.subplots(2, 2, progress=False)
-    assert isinstance(axs, _PanelGrid) and axs.shape == (2, 2) and len(axs.flat) == 4
+    assert isinstance(axs, np.ndarray) and axs.shape == (2, 2), "a numpy array of panels, as matplotlib returns"
+    assert len(axs.flatten()) == len(axs.ravel()) == len(list(axs.flat)) == 4
     assert axs[0, 1].spec is axs[0][1].spec, "matplotlib's two spellings agree"
-    assert axs[1, 0].spec is plot.panels[2].spec, "row-major, as in matplotlib"
+    assert axs[1, 0].spec is plot.axes[2].spec, "row-major, as in matplotlib"
     plot, grid = LivePlot.subplots(1, 2, squeeze=False, progress=False)
-    assert isinstance(grid, _PanelGrid) and grid.shape == (1, 2)
+    assert grid.shape == (1, 2)
     with pytest.raises(AssertionError, match="1x1 grid"):
         LivePlot.subplots(0, 2, progress=False)
 
@@ -41,8 +42,10 @@ def test_figsize_is_the_whole_figure_as_matplotlib_means_it():
 
 def test_plot_assigns_metrics_and_twinx_gives_the_right_axis():
     plot, (ax_loss, ax_lr) = LivePlot.subplots(1, 2, progress=False)
-    returned = ax_loss.plot("lossD", "lossG")
-    assert returned.plot("lossD") is returned, "chainable, and a repeat is not a duplicate"
+    returned = ax_loss.plot("lossD")
+    assert isinstance(returned, list) and len(returned) == 1, "a one-element list of lines, as matplotlib returns"
+    ax_loss.plot("lossG")
+    ax_loss.plot("lossD")  # a repeat is not a duplicate
     ax_loss.twinx().plot("D(x)")
     ax_lr.plot("lr")
     assert ax_loss.spec["metrics"] == ["lossD", "lossG"] and ax_loss.spec["secondary"] == ["D(x)"]
@@ -50,8 +53,10 @@ def test_plot_assigns_metrics_and_twinx_gives_the_right_axis():
     plot.log(0, lossD=1.0, lossG=0.5, lr=1e-3, **{"D(x)": 0.6})
     assert len(plot._specs) == 2, "subplots() fixed the grid: no third panel appeared"
     assert plot["D(x)"]._right and plot["lossD"]._right is False
-    with pytest.raises(AssertionError, match="metric names, not data"):
+    with pytest.raises(AssertionError, match="not data"):
         ax_lr.plot([1, 2, 3])
+    with pytest.raises(ValueError, match="already drawn"):
+        ax_lr.plot("lossD")
 
 
 def test_a_metric_nobody_declared_joins_a_panel_rather_than_growing_the_grid():
@@ -121,15 +126,6 @@ def test_renderer_draws_images_and_keeps_them_through_a_relayout():
     assert len(r.hist["loss"][0]) == 5, "and the curve history survives as before"
 
 
-def test_axvline_skips_image_panels():
-    panels = [_normalise_panel({"metrics": ["loss"]}), _normalise_panel({"kind": "image"})]
-    r = _FigureRenderer(panels, xlim=None, layout=LAYOUT)
-    r.add_image(1, np.zeros((8, 8), np.uint8))
-    r.add_axvline({"x": 2, "label": "lr drop"})
-    assert any(line.get_linestyle() == ":" for line in r.axes[0].get_lines())
-    assert not r.image_axes[1].get_lines(), "a vertical line across a picture means nothing"
-
-
 def test_figure_includes_the_image():
     plot, (ax_loss, ax_img) = LivePlot.subplots(1, 2, total=20, progress=False)
     ax_loss.plot("loss")
@@ -182,7 +178,8 @@ def _colour_images_are_safe_here() -> bool:
 def test_process_mode_curves_beside_images(fake_notebook):
     """The DCGAN shape: curves every step, samples every so often, one figure, one output cell."""
     plot, (ax_loss, ax_img) = LivePlot.subplots(1, 2, total=200, refresh_seconds=0.1, figsize=(8, 3), dpi=40)
-    ax_loss.plot("lossD", "lossG")
+    ax_loss.plot("lossD")
+    ax_loss.plot("lossG")
     ax_img.set_title("generator samples")
     assert plot.mode == "process"
     t0 = time.monotonic()
@@ -206,7 +203,8 @@ def test_process_mode_curves_beside_images(fake_notebook):
 def test_width_ratios_and_legend_placement():
     """matplotlib's own names: subplots(width_ratios=...) and ax.legend(**kwargs)."""
     plot, (ax_loss, ax_img) = LivePlot.subplots(1, 2, width_ratios=(1, 2), progress=False)
-    ax_loss.plot("lossD", "lossG")
+    ax_loss.plot("lossD")
+    ax_loss.plot("lossG")
     ax_loss.twinx().plot("D(x)")
     ax_loss.legend(loc="upper center", ncols=3)
     ax_img.imshow(rng_images())
@@ -220,6 +218,35 @@ def test_width_ratios_and_legend_placement():
     assert legend._ncols == 3 and legend._loc == 9, "kwargs reached Axes.legend (9 = upper center)"
     with pytest.raises(AssertionError, match="one entry per column"):
         LivePlot.subplots(1, 2, width_ratios=(1, 2, 3), progress=False)
+
+
+def test_sharex_gridspec_kw_and_subplot_kw_are_matplotlibs():
+    plot, axs = LivePlot.subplots(2, 1, sharex=True, gridspec_kw={"height_ratios": [2, 1]},
+                                  subplot_kw={"xlabel": "examples"}, progress=False)
+    axs[0].plot("loss")
+    axs[1].plot("lr")
+    plot.log(0, loss=1.0, lr=0.1)
+    plot.log(10, loss=0.5, lr=0.05)
+    a, b = [ax for ax in plot.figure().axes if ax.get_visible()]
+    assert a.get_shared_x_axes().joined(a, b)
+    assert a.get_subplotspec().get_gridspec().get_height_ratios() == [2, 1]
+    assert a.get_xlabel() == b.get_xlabel() == "examples"
+    with pytest.raises(AssertionError, match="both as parameter"):
+        LivePlot.subplots(1, 2, width_ratios=(1, 2), gridspec_kw={"width_ratios": [1, 1]}, progress=False)
+    with pytest.raises(AssertionError, match="sharey"):
+        LivePlot.subplots(1, 2, sharey="columns", progress=False)
+
+
+def test_imshow_passes_matplotlib_kwargs():
+    plot, ax = LivePlot.subplots(progress=False)
+    ax.imshow(rng_images(), interpolation="bilinear")
+    assert plot.figure().axes[0].images[0].get_interpolation() == "bilinear"
+    ax.imshow(rng_images())  # back to liveplot's default, crisp pixels
+    assert plot.figure().axes[0].images[0].get_interpolation() == "nearest"
+    with pytest.raises(ValueError):
+        ax.imshow(rng_images(), interpolation="blurry")
+    with pytest.raises(AssertionError, match="scales the pixels itself"):
+        ax.imshow(rng_images(), norm="log")
 
 
 def test_update_drives_one_bar_across_epochs():

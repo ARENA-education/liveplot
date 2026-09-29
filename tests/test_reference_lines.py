@@ -26,18 +26,18 @@ def test_normalise_axhlines():
 def test_renderer_draws_reference_lines_with_matplotlib_kwargs():
     panels = [_normalise_panel({"metrics": ["loss"], "secondary": ["acc"],
                                 "axhlines": [dict(y=2.3, label="uniform", color="red", linestyle="-")],
-                                "axhlines2": {"solved": 0.95}})]
+                                "axhlines2": {"solved": 0.95},
+                                "axvlines": [{"x": 5, "label": "lr drop", "color": "blue"}]}),
+              _normalise_panel("lr")]
     r = _FigureRenderer(panels, xlim=None, layout=LAYOUT)
     ax, ax2 = r.lines["loss"].axes, r.lines["acc"].axes
-    assert [t.get_text() for t in ax.get_legend().get_texts()] == ["loss", "acc", "uniform", "solved"]
+    assert [t.get_text() for t in ax.get_legend().get_texts()] == ["loss", "acc", "uniform", "lr drop", "solved"]
     ref = ax.get_lines()[1]
     assert ref.get_color() == "red" and ref.get_linestyle() == "-", "kwargs reach the matplotlib artist"
     assert ax2.get_lines()[1].get_linestyle() == "--", "default style when no kwargs given"
-    r.add_axvline({"x": 5, "label": "lr drop", "color": "blue"})
-    assert len(ax.get_lines()) == 3 and ax.get_lines()[2].get_color() == "blue" and ax.get_lines()[2].get_linestyle() == ":"
-    assert any(t.get_text().strip() == "lr drop" for t in ax.texts)
-    r.set_layout(panels + [_normalise_panel("lr")])  # re-layout keeps the vertical line, on the new panel too
-    assert all(any(line.get_linestyle() == ":" for line in a.get_lines()) for a in r.axes)
+    vline = ax.get_lines()[2]
+    assert vline.get_color() == "blue" and vline.get_linestyle() == ":", "axvline: dotted unless told otherwise"
+    assert not any(line.get_linestyle() == ":" for line in r.axes[1].get_lines()), "an axvline is on its own panel only"
     for step in range(10):
         r.add(step, {"loss": 3.0 - step / 5, "acc": step / 10})
     assert r.render()[:8] == PNG
@@ -47,17 +47,18 @@ def test_renderer_draws_reference_lines_with_matplotlib_kwargs():
 def test_axhline_and_axvline_off_mode():
     p = LivePlot("loss | acc")
     p.log(0, loss=1.0, acc=0.5)
-    p.axhline(0.2, "target", metric="loss", color="green")
-    p.axhline(0.9, metric="acc")  # label defaults to the value
-    p.axhline(0.0)  # no metric: left axis of every panel
-    assert p._specs[0]["axhlines"] == [{"color": "green", "y": 0.2, "label": "target"}, {"y": 0.0, "label": "0"}]
-    assert p._specs[0]["axhlines2"] == [{"y": 0.9, "label": "0.9"}]
-    p.axhline(1e-3, "final lr", metric="lr")  # metric not logged yet: creates its panel
-    assert p._specs[1]["metrics"] == ["lr"] and p._specs[1]["axhlines"] == [{"y": 0.001, "label": "final lr"}]
+    p["loss"].axhline(0.2, label="target", color="green")
+    p["acc"].axhline(0.9)  # no label: drawn, but not in the legend
+    p.axes[0].axhline()  # matplotlib's default y=0, on the panel's left axis
+    assert p._specs[0]["axhlines"] == [{"label": "target", "color": "green", "y": 0.2}, {"y": 0.0}]
+    assert p._specs[0]["axhlines2"] == [{"y": 0.9}]
+    p["lr"].axhline(1e-3, label="final lr")  # metric not logged yet: creates its panel
+    assert p._specs[1]["metrics"] == ["lr"] and p._specs[1]["axhlines"] == [{"label": "final lr", "y": 0.001}]
     p.log(7, loss=0.5)
-    p.axvline(label="lr drop")  # x defaults to the current step
-    p.axvline(9, "later", linewidth=2)
-    assert p.axvlines == [{"x": 7.0, "label": "lr drop"}, {"linewidth": 2, "x": 9.0, "label": "later"}]
+    p.axes[0].axvline(p.step, label="lr drop")
+    p.axes[1].axvline(9, linewidth=2)
+    assert p._specs[0]["axvlines"] == [{"label": "lr drop", "x": 7.0}]
+    assert p._specs[1]["axvlines"] == [{"linewidth": 2, "x": 9.0}]
 
 
 class _FakeHandle:
@@ -79,7 +80,7 @@ def test_process_mode_reference_lines(monkeypatch):
         for step in range(40):
             p.log(step, loss=11 - step / 8)
             if step == 20:
-                p.axvline(label="halfway")
-                p.axhline(7.35, "unigram", metric="loss")
+                p.axes[0].axvline(p.step, label="halfway")
+                p["loss"].axhline(7.35, label="unigram")
             time.sleep(0.03)
     assert h.frames and all(f[:8] == PNG for f in h.frames) and not p._proc.is_alive()

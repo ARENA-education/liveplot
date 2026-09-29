@@ -82,7 +82,7 @@ def test_x_axis_follows_tqdm_counting():
         r.log(loss=1.0)
         xs.append(r.step)
     assert xs == [0, 128, 256] and r.data["loss"][0] == xs and r.x_range == (0, 384)
-    assert r._layout[-1] == "examples", "default x label is the unit"
+    assert r._layout[5] == "examples", "default x label is the unit"
 
     s = LivePlot(range(3), progress=False)  # explicit step is per call, like wandb's step=
     for i in s:

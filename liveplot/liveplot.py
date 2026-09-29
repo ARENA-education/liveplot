@@ -46,33 +46,44 @@ ranges, use a dict instead of a string:
 
     {"metrics": ["acc"], "ylim": (0, 1), "ylabel": "test accuracy", "xlabel": "epoch"}
 
-(the dict form; the setters below are the nicer way). Panels and axes are addressed
-and configured with matplotlib's own names, before or during the loop:
+(the dict form; the setters below are the nicer way). The plot is the figure and its
+panels are the Axes, configured with matplotlib's own names and signatures, before
+or during the loop:
 
     plot["acc"].set_ylim(0, 1)                 # the y-axis holding a metric (left or right)
-    plot["acc"].set_ylabel("test accuracy")
-    plot["loss"].axhline(0.1, label="target", color="red")
-    plot.panels[0].set_title("training")       # a panel: title, xlabel, xlim, axvline, smooth
-    plot.panels[0].right.set_yscale("log")     # .left / .right are the panel's y-axes
-    plot.set(xlabel="examples", smooth=0.9)    # on the plot: every panel, like Axes.set
+    plot["loss"].set_ylim(bottom=0)            # one end fixed, the other follows the data
+    plot["acc"].set_ylabel("test accuracy", fontsize=9)
+    plot["loss"].axhline(0.1, color="red", label="target")   # a label puts it in the legend
+    plot.axes[0].set_title("training")         # plot.axes, like Figure.axes
+    plot.axes[0].axvline(plot.step, label="lr drop")
+    plot.axes[0].right.set_yscale("log")       # .left / .right are the panel's y-axes
+    plot.suptitle("run 3")                     # Figure.suptitle / supxlabel / supylabel
+    plot.set_all(xlabel="examples", smooth=0.9)   # every panel, including ones made later
 
-Available on axes: set_ylabel, set_ylim, set_yscale, axhline, set(**kw); on panels:
-set_title, set_xlabel, set_xlim, set_smooth, axvline, set(**kw), plus the left
-axis's setters; on the plot: all of these for every panel, `axhline` (every left
-axis, or `metric=` for one) and `axvline` (every panel). Extra kwargs on
-`axhline` / `axvline` go to the matplotlib artist. Smoothing is wandb's
+Available on an axis: plot, set_ylabel, set_ylim, set_yscale, axhline, set(**kw),
+lines; on a panel: set_title, set_xlabel, set_xlim, set_xscale, axvline, legend,
+twinx, imshow, set_smooth, set(**kw), plus the left axis's setters. Arguments are
+matplotlib's (text kwargs, scale kwargs, one-sided limits, Line2D kwargs on
+reference lines), and each call is tried on a scratch matplotlib Axes first, so a
+mistake raises matplotlib's own error where it was made. Smoothing is wandb's
 time-weighted EMA with the same 0 to 1 weight (`smooth=0.9`), raw values faded
 behind.
 
-Images beside curves: `LivePlot.subplots` mirrors `plt.subplots`, and a panel can
+Images beside curves: `LivePlot.subplots` mirrors `plt.subplots` (numpy array of
+panels, sharex / sharey, width_ratios, gridspec_kw, subplot_kw), and a panel can
 hold a picture instead of lines -- loss curves updating every step next to samples
 from a generator, in one figure:
 
     plot, (ax_loss, ax_samples) = LivePlot.subplots(1, 2, total=n_steps, figsize=(11, 4))
-    ax_loss.plot("lossD", "lossG")             # which metrics live on this axis
+    ax_loss.plot("lossD")                      # a metric's name where matplotlib takes data
+    ax_loss.plot("lossG", "--", label="generator")   # fmt strings and Line2D kwargs, as in matplotlib
     ax_loss.twinx().plot("D(x)")               # matplotlib's spelling for a right-hand axis
     ...
     ax_samples.imshow(netG(noise), rows=2, vmin=-1, vmax=1)   # replaces the last one
+
+`ax.plot("loss")` is matplotlib's `ax.plot("loss", data=d)` with the data supplied
+later by `log()`; like matplotlib it takes one series per call and returns `[line]`
+(two names would mean x and y there, so they are an error here).
 
 `plot.imshow(x)` does the same on a plot of its own, making the panel on first use.
 A batch is tiled for you (`rows` / `cols` / `griddim=(r, c)`, padding or dropping
@@ -132,7 +143,7 @@ import warnings
 import weakref
 
 _PANEL_KEYS = {"title", "metrics", "secondary", "xlabel", "ylabel", "ylabel2", "xlim", "ylim", "ylim2", "axhlines", "axhlines2",
-               "axvlines", "smooth", "yscale", "yscale2", "kind", "cmap", "legend"}
+               "axvlines", "smooth", "xscale", "yscale", "yscale2", "kind", "cmap", "legend", "styles", "kw"}
 _REF_LINE_STYLE = {"linestyle": "--", "linewidth": 1, "color": "0.45"}  # defaults for axhline / axvline artists
 
 
@@ -185,7 +196,7 @@ def _normalise_panel(spec, allow_empty: bool = False) -> dict:
     assert metrics or secondary or kind == "image" or allow_empty, f"a panel needs at least one metric: {spec!r}"
     for lim in ("xlim", "ylim", "ylim2"):
         if spec.get(lim) is not None:
-            assert len(spec[lim]) == 2, f"{lim} must be a (low, high) pair"
+            assert len(spec[lim]) == 2, f"{lim} must be a (low, high) pair (either may be None)"
     return {
         "title": spec.get("title") or " / ".join(metrics + secondary),
         "metrics": metrics,
@@ -200,11 +211,15 @@ def _normalise_panel(spec, allow_empty: bool = False) -> dict:
         "axhlines2": _normalise_axhlines(spec.get("axhlines2")),  # ... and on the right axis
         "axvlines": [dict(kw) for kw in spec.get("axvlines") or []],  # vertical lines on this panel only (axvline kwargs)
         "smooth": _check_smooth(spec.get("smooth")),  # TWEMA weight in [0, 1); None = plot-wide default; 0 = off
-        "yscale": spec.get("yscale", "linear"),  # "linear" or "log", left axis
+        "xscale": spec.get("xscale", "linear"),  # any matplotlib scale name: "linear", "log", "symlog", ...
+        "yscale": spec.get("yscale", "linear"),  # ... left axis
         "yscale2": spec.get("yscale2", "linear"),  # ... right axis
         "kind": kind,  # "curve" (metric lines) or "image" (one picture, overwritten in place)
         "cmap": spec.get("cmap", "gray"),  # image panels only; matplotlib ignores it for RGB data
         "legend": dict(spec.get("legend") or {}),  # Axes.legend kwargs (loc, ncols, bbox_to_anchor, ...)
+        "styles": {k: dict(v) for k, v in (spec.get("styles") or {}).items()},  # metric -> Line2D kwargs, from ax.plot
+        "kw": {k: dict(v) for k, v in (spec.get("kw") or {}).items()},  # extra matplotlib kwargs for the setters:
+        # "title", "xlabel", "ylabel", "ylabel2" (Text kwargs), "xscale", "yscale", "yscale2", "imshow"
     }
 
 
@@ -266,19 +281,22 @@ class _FigureRenderer:
     """
 
     def __init__(self, panels, xlim, layout, hist=None, images=None):
-        self.xlim, self.layout = xlim, layout  # xlim = default x range or None; layout = (max_cols, rows, cols, cell_size, dpi, xlabel)
+        # xlim = default x range or None; layout = (max_cols, rows, cols, cell_size, dpi, xlabel[, figure_kw])
+        self.xlim, self.layout = xlim, layout
         self.hist = hist if hist is not None else {}
         self.images = dict(images) if images else {}  # panel index -> (the uint8 array it is showing, its x)
-        self.axvlines: list[dict] = []  # vertical reference lines (matplotlib axvline kwargs), drawn on every panel
         self.set_layout(panels)
 
     def set_layout(self, panels):
         import matplotlib
         from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.cbook import normalize_kwargs
         from matplotlib.figure import Figure
+        from matplotlib.lines import Line2D
 
         max_cols, rows_opt, cols_opt, cell_size, dpi, xlabel, *rest = self.layout
-        gridspec_kw = rest[0] if rest else {}  # width_ratios / height_ratios, from subplots()
+        figure_kw = rest[0] if rest else {}  # subplots()' grid options, and suptitle / supxlabel / supylabel
+        gridspec_kw = dict(figure_kw.get("gridspec_kw") or {})
         n = len(panels)
         rows, cols = _grid_shape(n, max_cols, rows_opt, cols_opt)
         self.panels = panels
@@ -293,75 +311,99 @@ class _FigureRenderer:
         self.fig = Figure(figsize=(fig_width, cell_size[1] * rows))
         FigureCanvasAgg(self.fig)
         self.dpi = dpi
-        axes = self.fig.subplots(rows, cols, squeeze=False, gridspec_kw=gridspec_kw).flatten()
+        axes = self.fig.subplots(rows, cols, squeeze=False, gridspec_kw=gridspec_kw,
+                                 sharex=figure_kw.get("sharex", False), sharey=figure_kw.get("sharey", False)).flatten()
+        for method in ("suptitle", "supxlabel", "supylabel"):
+            if figure_kw.get(method):
+                text, kw = figure_kw[method]
+                getattr(self.fig, method)(text, **kw)
         palette = matplotlib.rcParams["axes.prop_cycle"].by_key()["color"]
         self.lines = {}
         self.raw_lines = {}  # metric -> faded line of the unsmoothed values, on smoothed panels
         self.smooth = {}  # metric -> TWEMA weight in (0, 1) or None
-        self.fixed = {}  # axes -> (x fixed?, y fixed?): fixed axes are never autoscaled
-        self.panel_cmaps = {i: p["cmap"] for i, p in enumerate(panels)}
-        self.panel_titles = {i: p["title"] for i, p in enumerate(panels)}
+        self.limits = {}  # axes -> (xlim, ylim) as the user set them: None, (lo, hi), or one-sided with a None
+        self.panel_titles = {i: (p["title"], p["kw"].get("title", {})) for i, p in enumerate(panels)}
+        self.panel_imshow = {i: {"cmap": p["cmap"], "interpolation": "nearest", **p["kw"].get("imshow", {})}
+                             for i, p in enumerate(panels)}
         self.image_axes = {}  # panel index -> its Axes, for the image panels
         self.image_artists = {}  # ... and the AxesImage drawn on it, so a redraw can set_data in place
         for i, (ax, panel) in enumerate(zip(axes, panels)):
+            kw = panel["kw"]
             if panel["kind"] == "image":
-                ax.set_title(panel["title"])
+                ax.set_title(panel["title"], **kw.get("title", {}))
                 ax.set_axis_off()  # pixel indices along the edge of a tiled grid are just noise
                 self.image_axes[i] = ax
                 continue
             names = panel["metrics"] + panel["secondary"]
             ax2 = ax.twinx() if panel["secondary"] else None
-            ax.set_yscale(panel["yscale"])
+            ax.set_xscale(panel["xscale"], **kw.get("xscale", {}))
+            ax.set_yscale(panel["yscale"], **kw.get("yscale", {}))
             if ax2 is not None:
-                ax2.set_yscale(panel["yscale2"])
+                ax2.set_yscale(panel["yscale2"], **kw.get("yscale2", {}))
             window = panel["smooth"] if panel["smooth"] else None  # TWEMA weight in (0, 1)
             assert window is None or 0 < window < 1, f"smooth must be a weight in (0, 1), got {window!r}"
-            handles = []
             for j, name in enumerate(names):
                 target = ax2 if name in panel["secondary"] else ax
-                color = palette[j % len(palette)]
+                style = {"color": palette[j % len(palette)], "linewidth": 1.2, "label": name,
+                         **normalize_kwargs(panel["styles"].get(name, {}), Line2D)}
                 if window:
-                    (self.raw_lines[name],) = target.plot([], [], lw=0.8, color=color, alpha=0.25)
-                (line,) = target.plot([], [], lw=1.2, color=color, label=name)
-                self.lines[name] = line
+                    (self.raw_lines[name],) = target.plot([], [], color=style["color"], linewidth=0.8, alpha=0.25,
+                                                          linestyle=style.get("linestyle", "-"), label="_raw")
+                (self.lines[name],) = target.plot([], [], **style)
                 self.smooth[name] = window
                 self.hist.setdefault(name, ([], []))
-                handles.append(line)
             for target, key in ((ax, "axhlines"), (ax2, "axhlines2")):
-                for kw in panel[key] if target is not None else []:
-                    handles.append(target.axhline(**{**_REF_LINE_STYLE, **kw}))
-                    names = names + [kw["label"]]
-            ax.set_title(panel["title"])
-            ax.set_xlabel(panel["xlabel"] or xlabel)
+                for line_kw in panel[key] if target is not None else []:
+                    target.axhline(**{**_REF_LINE_STYLE, **line_kw})
+            for line_kw in panel["axvlines"]:
+                ax.axvline(**{**_REF_LINE_STYLE, "linestyle": ":", **line_kw})
+            ax.set_title(panel["title"], **kw.get("title", {}))
+            ax.set_xlabel(panel["xlabel"] or xlabel, **kw.get("xlabel", {}))
             xlim = panel["xlim"] or self.xlim
-            if xlim:
-                ax.set_xlim(*xlim)
-            if panel["ylim"]:
-                ax.set_ylim(*panel["ylim"])
-            self.fixed[ax] = (xlim is not None, panel["ylim"] is not None)
-            if names and names != ["_"]:  # (nothing logged yet, or the "waiting for data" placeholder)
-                # every panel gets a legend (reference lines included); Panel.legend(**kwargs) moves or styles it
-                ax.legend(handles, names, **{"loc": "best", "fontsize": 8, **panel["legend"]})
+            self.limits[ax] = (xlim, panel["ylim"])
             if ax2 is not None:
-                ax.set_ylabel(panel["ylabel"] or ", ".join(panel["metrics"]))
-                ax2.set_ylabel(panel["ylabel2"] or ", ".join(panel["secondary"]))
-                if panel["ylim2"]:
-                    ax2.set_ylim(*panel["ylim2"])
-                self.fixed[ax2] = (xlim is not None, panel["ylim2"] is not None)
+                ax.set_ylabel(panel["ylabel"] or ", ".join(panel["metrics"]), **kw.get("ylabel", {}))
+                ax2.set_ylabel(panel["ylabel2"] or ", ".join(panel["secondary"]), **kw.get("ylabel2", {}))
+                self.limits[ax2] = (xlim, panel["ylim2"])
             elif panel["ylabel"]:
-                ax.set_ylabel(panel["ylabel"])
+                ax.set_ylabel(panel["ylabel"], **kw.get("ylabel", {}))
+            for target in (ax, ax2):
+                if target is not None:
+                    self._apply_limits(target)
+            # One legend per panel, for the curves on both y-axes and the labelled reference lines, as
+            # matplotlib collects it: an artist whose label starts with "_" is left out. The metrics come
+            # first, then the reference lines.
+            handles, labels = ax.get_legend_handles_labels()
+            if ax2 is not None:
+                handles2, labels2 = ax2.get_legend_handles_labels()
+                handles, labels = handles + handles2, labels + labels2
+            curves = set(map(id, self.lines.values()))
+            order = sorted(range(len(handles)), key=lambda k: id(handles[k]) not in curves)
+            if handles:  # (nothing logged yet, or the "waiting for data" placeholder)
+                ax.legend([handles[k] for k in order], [labels[k] for k in order],
+                          **{"loc": "best", "fontsize": 8, **panel["legend"]})
         for ax in axes[n:]:
             ax.set_visible(False)
         self.axes = list(axes[:n])
-        for ax, panel in zip(self.axes, panels):
-            for kw in panel["axvlines"]:
-                self._draw_axvline(kw, [ax])
-        for kw in self.axvlines:
-            self._draw_axvline(kw)
         for index in self.images:  # a re-layout rebuilds the figure; put the pictures back
             if index in self.image_axes:
                 self._draw_image(index)
         self.fig.tight_layout(pad=0.6)
+
+    def _apply_limits(self, ax, autoscale: bool = False):
+        """
+        The user's limits on `ax`. Both ends given: fixed, and never autoscaled. One end given, as in
+        matplotlib's `set_ylim(bottom=0)`: the other end follows the data, so autoscale first and then
+        pin the given end.
+        """
+        xlim, ylim = self.limits[ax]
+        whole = [lim is not None and None not in lim for lim in (xlim, ylim)]
+        if autoscale:
+            ax.relim()
+            ax.autoscale_view(scalex=not whole[0], scaley=not whole[1])
+        for lim, full, setter in ((xlim, whole[0], ax.set_xlim), (ylim, whole[1], ax.set_ylim)):
+            if lim is not None:
+                setter(*lim) if full else setter(*lim, auto=None)  # auto=None: keep autoscaling the free end
 
     def _fitted_widths(self, panels, cell_size, fig_width):
         """
@@ -384,18 +426,6 @@ class _FigureRenderer:
             for i in curves:
                 widths[i] = max(spare, 0.6 * cell_w)
         return widths, aspects
-    def add_axvline(self, kw: dict):
-        self.axvlines.append(kw)
-        self._draw_axvline(kw)
-
-    def _draw_axvline(self, kw, axes=None):
-        label = kw.get("label")
-        style = {**_REF_LINE_STYLE, "linestyle": ":", **{k: v for k, v in kw.items() if k != "label"}}
-        picture = set(self.image_axes.values())  # a vertical line across a picture means nothing
-        for ax in ([a for a in self.axes if a not in picture] if axes is None else axes):
-            ax.axvline(**style)
-            if label:
-                ax.text(kw["x"], 0.98, f" {label}", transform=ax.get_xaxis_transform(), va="top", ha="left", fontsize=7, color="0.3", rotation=90)
 
     def add_image(self, index: int, arr, x=None):
         self.images[index] = (arr, x)
@@ -408,16 +438,15 @@ class _FigureRenderer:
             return self.set_layout(self.panels)  # a picture of a new shape: re-fit the panel widths (draws it too)
         ax = self.image_axes[index]
         if x is not None:  # say how old the picture is: it is only redrawn when imshow is called
-            title, when = self.panel_titles[index], f"{self.layout[5]} {x:g}"
-            ax.set_title(f"{title} ({when})" if title else when)
+            (title, title_kw), when = self.panel_titles[index], f"{self.layout[5]} {x:g}"
+            ax.set_title(f"{title} ({when})" if title else when, **title_kw)
         artist = self.image_artists.get(index)
         if artist is not None and artist.get_array().shape == arr.shape:
             artist.set_data(arr)  # same size as last time: no new artist, no rescale
             return
         if artist is not None:
             artist.remove()
-        cmap = self.panel_cmaps.get(index, "gray")
-        self.image_artists[index] = ax.imshow(arr, cmap=cmap, interpolation="nearest")
+        self.image_artists[index] = ax.imshow(arr, **self.panel_imshow[index])
 
     def add(self, step, metrics: dict):
         for name, value in metrics.items():
@@ -434,10 +463,8 @@ class _FigureRenderer:
                 line.set_data(xs, _twema(xs, ys, self.smooth[name], x_range))
             else:
                 line.set_data(xs, ys)
-        for line in self.lines.values():
-            fixed_x, fixed_y = self.fixed[line.axes]
-            line.axes.relim()
-            line.axes.autoscale_view(scalex=not fixed_x, scaley=not fixed_y)
+        for ax in self.limits:
+            self._apply_limits(ax, autoscale=True)
         buf = io.BytesIO()
         self.fig.savefig(buf, format="png", dpi=self.dpi)
         return buf.getvalue()
@@ -484,9 +511,6 @@ def _render_worker(panels, inbox, outbox, refresh_seconds, layout, xlim, parent_
             elif item[0] == "layout":
                 renderer.layout = item[2]  # grid options can change after start (subplots' width_ratios)
                 renderer.set_layout(item[1])
-                dirty = True
-            elif item[0] == "axvline":
-                renderer.add_axvline(item[1])
                 dirty = True
             elif item[0] == "image":
                 renderer.add_image(*item[1:])
@@ -551,19 +575,138 @@ def _collect_loop(plot_ref, outbox, proc, done):
 # --------------------------------------------------------------------------- panels and axes, addressed like matplotlib
 
 
-def _lim(a, b):
-    """Accept matplotlib's forms: set_xlim((lo, hi)), set_xlim(lo, hi), set_xlim(lo) / set_xlim(right=hi) not supported."""
-    if b is None and isinstance(a, (tuple, list)):
-        a, b = a
-    assert a is not None and b is not None, "give both limits, e.g. set_ylim(0, 1)"
-    return (float(a), float(b))
+def _lim(lo, hi, lo_alias=None, hi_alias=None):
+    """
+    matplotlib's limit arguments -> (lo, hi), either of which may be None to leave that end to the
+    data: set_ylim(0, 1), set_ylim((0, 1)), set_ylim(bottom=0), set_ylim(top=1), set_ylim(ymin=0).
+    Both None (a bare `set_ylim()`) -> None, i.e. autoscale again.
+    """
+    if hi is None and isinstance(lo, (tuple, list)):
+        lo, hi = lo
+    for name, value, alias in (("lower", lo, lo_alias), ("upper", hi, hi_alias)):
+        assert value is None or alias is None, f"give the {name} limit once, not under two names"
+    lo = lo if lo is not None else lo_alias
+    hi = hi if hi is not None else hi_alias
+    if lo is None and hi is None:
+        return None
+    return (None if lo is None else float(lo), None if hi is None else float(hi))
+
+
+_FMT_LINESTYLES = ("--", "-.", "-", ":")
+_FMT_MARKERS = set(".,ov^<>12348spP*hH+xXDd|_")
+_FMT_COLORS = set("bgrcmykw")
+
+
+def _parse_fmt(fmt: str) -> dict | None:
+    """
+    matplotlib's plot format string, '[marker][line][color]' in any order ("r--", "o-", "C2:", "k"),
+    or a lone colour of any kind ("tab:orange", "#1f77b4") -> Line2D kwargs; None if `fmt` is none
+    of these (then it is taken as a metric name). A marker with no line style means markers only.
+    """
+    style, i = {}, 0
+    while i < len(fmt):
+        two = fmt[i:i + 2]
+        if two in ("--", "-.") and "linestyle" not in style:
+            style["linestyle"], i = two, i + 2
+            continue
+        c = fmt[i]
+        if c in "-:" and "linestyle" not in style:
+            style["linestyle"] = c
+        elif c == "C" and fmt[i + 1:i + 2].isdigit() and "color" not in style:
+            j = i + 1
+            while j < len(fmt) and fmt[j].isdigit():
+                j += 1
+            style["color"], i = fmt[i:j], j
+            continue
+        elif c in _FMT_COLORS and "color" not in style:
+            style["color"] = c
+        elif c in _FMT_MARKERS and "marker" not in style:
+            style["marker"] = c
+        else:
+            from matplotlib.colors import is_color_like
+
+            return {"color": fmt} if is_color_like(fmt) else None
+        i += 1
+    if "marker" in style and "linestyle" not in style:
+        style["linestyle"] = "None"
+    return style or None
+
+
+_scratch_axes = None
+
+
+def _try(method: str, *args, **kwargs):
+    """
+    Call `Axes.<method>(*args, **kwargs)` on a scratch matplotlib Axes and throw the result away. The
+    real drawing happens later, in the render process, where a misspelt keyword or an unknown scale
+    would only kill the renderer; trying it here first raises matplotlib's own error at the line that
+    made the mistake.
+    """
+    global _scratch_axes
+    if _scratch_axes is None:
+        from matplotlib.figure import Figure
+
+        _scratch_axes = Figure().add_subplot()
+    try:
+        getattr(_scratch_axes, method)(*args, **kwargs)
+    finally:
+        _scratch_axes.cla()
+
+
+_DATA_KWARGS = {"data", "xdata", "ydata", "transform", "axes", "figure"}  # liveplot's to set, not the caller's
+
+
+class _Line:
+    """
+    One metric's line, as `ax.plot` returns it (in a one-element list, like matplotlib's, so
+    `(line,) = ax.plot("loss")` works). It takes Line2D's setters for restyling later:
+    `line.set_color("red")`, `line.set_linestyle("--")`, `line.set(alpha=0.5, label="train")`.
+    """
+
+    def __init__(self, plot, index: int, name: str):
+        self._plot, self._index, self._name = plot, index, name
+
+    @property
+    def _styles(self) -> dict:
+        return self._plot._specs[self._index]["styles"]
+
+    def set(self, **kwargs):
+        """Like `Line2D.set`: any Line2D property, e.g. `line.set(color="k", linewidth=2)`."""
+        style = {**self._styles.get(self._name, {}), **kwargs}
+        _check_line_style(style)
+        self._styles[self._name] = style
+        self._plot._send_layout()
+
+    def get_label(self) -> str:
+        return self._styles.get(self._name, {}).get("label", self._name)
+
+    def __getattr__(self, attr):
+        if attr.startswith("set_"):  # set_color(c), set_linewidth(w), ...: Line2D's setters, via set()
+            return lambda value: self.set(**{attr[4:]: value})
+        raise AttributeError(attr)
+
+    def __repr__(self):
+        return f"<liveplot line {self._name!r}>"
+
+
+def _check_line_style(style: dict):
+    """Line2D kwargs as `ax.plot` would take them, checked on a scratch Axes (see `_try`)."""
+    taken = sorted(_DATA_KWARGS & set(style))
+    assert not taken, f"{taken}: liveplot sets these itself; a metric's data comes from log()"
+    _try("plot", [], [], **style)
+
+
+def _text_kw(kwargs: dict, **named) -> dict:
+    """matplotlib's text setters' named arguments (fontdict, loc, pad, labelpad), where given, and the rest."""
+    return {**{k: v for k, v in named.items() if v is not None}, **kwargs}
 
 
 class _Axis:
     """
     One y-axis of a panel (left, or the right-hand `secondary` one), with matplotlib's `Axes` names:
-    set_ylabel / set_ylim / set_yscale / axhline / set(**kwargs). Panel-level setters (title, xlabel,
-    xlim, axvline, smooth) are available here too, as they are on a matplotlib Axes.
+    plot / set_ylabel / set_ylim / set_yscale / axhline / set(**kwargs). Panel-level setters (title,
+    xlabel, xlim, xscale, axvline, legend, smooth) are available here too, as they are on a matplotlib
+    Axes.
     """
 
     def __init__(self, plot, index: int, right: bool):
@@ -577,44 +720,90 @@ class _Axis:
     def metrics(self) -> list:
         return list(self._plot._specs[self._index]["secondary" if self._right else "metrics"])
 
-    def _set(self, key, value):
-        self._plot._specs[self._index][key + ("2" if self._right else "")] = value
+    @property
+    def lines(self) -> list:
+        """Like `Axes.lines`: a handle on each metric's line on this axis, for restyling."""
+        return [_Line(self._plot, self._index, name) for name in self.metrics]
+
+    def _key(self, key):
+        return key + ("2" if self._right else "")
+
+    def _set(self, key, value, kw=None):
+        spec = self._plot._specs[self._index]
+        spec[self._key(key)] = value
+        if kw is not None:
+            spec["kw"][self._key(key)] = kw
         self._plot._send_layout()
 
-    def plot(self, *metrics):
+    def plot(self, *args, **kwargs) -> list:
         """
-        Put these metrics on this axis: `ax.plot("lossD", "lossG")`. matplotlib spells the same
-        thing `ax.plot("lossD", data=d)`, naming series in a data source; here the source is the
-        plot itself, filled in later by `log()`. Returns the axis, so calls can be chained.
+        Like `Axes.plot`, with a metric's name where matplotlib takes data: `ax.plot("loss")` draws the
+        metric `loss` against the step, as matplotlib's `ax.plot("loss", data=d)` draws d["loss"]
+        against its index; `log()` supplies the data later. A format string and Line2D kwargs style
+        it: `ax.plot("loss", "r--", label="train loss", alpha=0.8)`. Returns `[line]`, like matplotlib,
+        and the line takes Line2D's setters: `(line,) = ax.plot("loss"); line.set_color("k")`.
+
+        One metric per call. matplotlib reads `ax.plot("a", "b", data=d)` as b against a, so two
+        names are an error here rather than two curves.
         """
-        assert metrics, "plot() needs at least one metric name"
-        assert all(isinstance(m, str) for m in metrics), \
-            f"plot() takes metric names, not data: {[m for m in metrics if not isinstance(m, str)]!r}"
-        panel = self._plot._specs[self._index]
-        assert panel["kind"] == "curve", "this panel is showing an image; use a different panel for curves"
+        assert args, 'plot() needs a metric name: ax.plot("loss")'
+        name, *rest = args
+        assert isinstance(name, str), (
+            f"plot() takes a metric's name, not data (got {type(name).__name__}): the data comes from "
+            f'log(). Name the metric here, e.g. ax.plot("loss"), then plot.log(loss=...) in the loop'
+        )
+        style = _parse_fmt(rest[0]) if len(rest) == 1 and isinstance(rest[0], str) else None
+        if rest and style is None:
+            names = [a for a in args if isinstance(a, str)]
+            raise TypeError(
+                f"ax.plot({', '.join(map(repr, args))}): one metric per call. matplotlib reads two names as x "
+                f"and y ({args[1]!r} against {args[0]!r}); liveplot plots every metric against the step, so "
+                f"call plot once for each: " + "; ".join(f"ax.plot({n!r})" for n in names)
+            )
+        style = {**(style or {}), **kwargs}
+        _check_line_style(style)
+        spec = self._plot._specs[self._index]
+        assert spec["kind"] == "curve", "this panel is showing an image; use a different panel for curves"
+        where = self._plot._axis_of(name)
+        if where is not None and where != (self._index, self._right):
+            raise ValueError(
+                f"{name!r} is already drawn on {self._plot[name]!r}; a metric lives on one axis. If log() "
+                f"placed it before this call, call ax.plot({name!r}) before the first log()"
+            )
         key = "secondary" if self._right else "metrics"
-        auto = " / ".join(panel["metrics"] + panel["secondary"])
-        was_auto = panel["title"] in (auto, "")  # unnamed, or named after the metrics it had
-        panel[key].extend(m for m in metrics if m not in panel[key])
-        if was_auto:  # a title set with set_title() survives a later plot() call
-            panel["title"] = " / ".join(panel["metrics"] + panel["secondary"])
-        self._plot._place(metrics)
-        return self
+        if name not in spec[key]:
+            auto = " / ".join(spec["metrics"] + spec["secondary"])
+            was_auto = spec["title"] in (auto, "")  # unnamed, or named after the metrics it had
+            spec[key].append(name)
+            if was_auto:  # a title set with set_title() survives a later plot() call
+                spec["title"] = " / ".join(spec["metrics"] + spec["secondary"])
+        if style:
+            spec["styles"][name] = {**spec["styles"].get(name, {}), **style}
+        self._plot._place([name])
+        return [_Line(self._plot, self._index, name)]
 
-    def set_ylabel(self, ylabel):
-        self._set("ylabel", str(ylabel))
+    def set_ylabel(self, ylabel, fontdict=None, labelpad=None, *, loc=None, **kwargs):
+        kw = _text_kw(kwargs, fontdict=fontdict, labelpad=labelpad, loc=loc)
+        _try("set_ylabel", str(ylabel), **kw)
+        self._set("ylabel", str(ylabel), kw)
 
-    def set_ylim(self, bottom=None, top=None):
-        self._set("ylim", _lim(bottom, top))
+    def set_ylim(self, bottom=None, top=None, *, ymin=None, ymax=None):
+        """Like `Axes.set_ylim`: `set_ylim(0, 1)`, `set_ylim((0, 1))`, or one end, `set_ylim(bottom=0)`."""
+        self._set("ylim", _lim(bottom, top, ymin, ymax))
 
-    def set_yscale(self, value):
-        assert value in ("linear", "log"), f"yscale must be 'linear' or 'log', got {value!r}"
-        self._set("yscale", value)
+    def set_yscale(self, value, **kwargs):
+        """Like `Axes.set_yscale`: "linear", "log", "symlog", "logit", ..., with the scale's kwargs."""
+        _try("set_yscale", value, **kwargs)
+        self._set("yscale", value, kwargs)
 
-    def axhline(self, y, label=None, **kwargs):
-        """Like `Axes.axhline`: a horizontal reference line on this axis, with `label` in the legend."""
-        line = {**kwargs, "y": float(y), "label": str(label) if label is not None else f"{float(y):g}"}
-        self._plot._specs[self._index]["axhlines2" if self._right else "axhlines"].append(line)
+    def axhline(self, y=0, xmin=0, xmax=1, **kwargs):
+        """
+        Like `Axes.axhline`: a horizontal line at `y`, dashed grey unless kwargs say otherwise. Give it
+        a `label` to put it in the legend, e.g. `ax.axhline(math.log(10), label="chance", color="r")`.
+        """
+        line = {**kwargs, "y": float(y), **({"xmin": xmin, "xmax": xmax} if (xmin, xmax) != (0, 1) else {})}
+        _try("axhline", **line)
+        self._plot._specs[self._index][self._key("axhlines")].append(line)
         self._plot._send_layout()
 
     def set(self, **kwargs):
@@ -623,29 +812,40 @@ class _Axis:
             getattr(self, f"set_{key}")(value)
 
     # panel-level setters, so plot["acc"].set_title(...) works as it would on a matplotlib Axes
-    def set_title(self, label):
-        self.panel.set_title(label)
+    def set_title(self, label, fontdict=None, loc=None, pad=None, **kwargs):
+        self.panel.set_title(label, fontdict, loc, pad, **kwargs)
 
     def legend(self, **kwargs):
         self.panel.legend(**kwargs)
 
-    def set_xlabel(self, xlabel):
-        self.panel.set_xlabel(xlabel)
+    def set_xlabel(self, xlabel, fontdict=None, labelpad=None, *, loc=None, **kwargs):
+        self.panel.set_xlabel(xlabel, fontdict, labelpad, loc=loc, **kwargs)
 
-    def set_xlim(self, left=None, right=None):
-        self.panel.set_xlim(left, right)
+    def set_xlim(self, left=None, right=None, *, xmin=None, xmax=None):
+        self.panel.set_xlim(left, right, xmin=xmin, xmax=xmax)
 
-    def axvline(self, x=None, label=None, **kwargs):
-        self.panel.axvline(x, label, **kwargs)
+    def set_xscale(self, value, **kwargs):
+        self.panel.set_xscale(value, **kwargs)
+
+    def axvline(self, x=0, ymin=0, ymax=1, **kwargs):
+        self.panel.axvline(x, ymin, ymax, **kwargs)
 
     def set_smooth(self, weight):
         self.panel.set_smooth(weight)
 
+    def twinx(self):
+        return self.panel.twinx()
+
+    def __repr__(self):
+        side = "right" if self._right else "left"
+        return f"<liveplot axis: panel {self._index}, {side}: {' '.join(self.metrics) or '(empty)'}>"
+
 
 class Panel:
     """
-    One panel of the grid: `plot.panels[i]`, or `plot[metric].panel`. `.left` / `.right` are its y-axes
-    (`.right` exists only if the panel has secondary metrics). y-setters here act on the left axis.
+    One panel of the grid, the Axes of a matplotlib figure: `plot.axes[i]`, what `LivePlot.subplots`
+    hands out, or `plot[metric].panel`. `.left` / `.right` are its y-axes (`.right` exists only if the
+    panel has secondary metrics; `twinx()` makes it). y-setters here act on the left axis.
     """
 
     def __init__(self, plot, index: int):
@@ -660,24 +860,29 @@ class Panel:
         return list(self.spec["metrics"]) + list(self.spec["secondary"])
 
     @property
+    def lines(self) -> list:
+        """Like `Axes.lines`: a handle on each metric's line on this panel (both y-axes), for restyling."""
+        return [_Line(self._plot, self._index, name) for name in self.metrics]
+
+    @property
     def left(self) -> _Axis:
         return _Axis(self._plot, self._index, right=False)
 
     @property
     def right(self) -> _Axis:
-        assert self.spec["secondary"], "this panel has no right-hand axis (no metrics after '|')"
+        assert self.spec["secondary"], "this panel has no right-hand axis (no metrics after '|'; twinx() makes one)"
         return _Axis(self._plot, self._index, right=True)
 
     def twinx(self) -> _Axis:
         """Like `Axes.twinx`: this panel's right-hand y-axis, whether or not it holds anything yet."""
         return _Axis(self._plot, self._index, right=True)
 
-    def plot(self, *metrics) -> _Axis:
-        """Like `ax.plot("name", data=...)`: put these metrics on the left axis. See `_Axis.plot`."""
-        return self.left.plot(*metrics)
+    def plot(self, *args, **kwargs) -> list:
+        """Like `Axes.plot`, on the left axis: `ax.plot("loss", "r--", label="train")`. See `_Axis.plot`."""
+        return self.left.plot(*args, **kwargs)
 
     def imshow(self, x, *, rows=None, cols=None, griddim=None, vmin=None, vmax=None, scale_each=False,
-               channels=None, cmap="gray", padding=0, pad_value=0, max_images=64, max_cols=8):
+               channels=None, cmap="gray", padding=0, pad_value=0, max_images=64, max_cols=8, **kwargs):
         """
         Like `Axes.imshow`, but for a whole batch and repeatable: show `x` on this panel, replacing
         whatever was there. A batch is tiled into a grid -- `rows` or `cols` alone infers the other,
@@ -685,7 +890,8 @@ class Panel:
         the grid is near-square (3 -> 2x2, 5 -> 3x2, 8 -> 3x3, 64 -> 8x8), at most `max_cols` wide.
         Only the first `max_images` are shown, with a warning (`max_images=None` for all of them).
         Images sit edge to edge; `padding` puts that many pixels of `pad_value` between them. The
-        title shows the step the image was drawn at.
+        title shows the step the image was drawn at. Other kwargs (`interpolation`, `aspect`, ...) go
+        to matplotlib's `imshow`; the default interpolation is "nearest", so pixels stay crisp.
 
         Accepts (H, W), (C, H, W), (H, W, C), (B, H, W), (B, C, H, W) and (B, H, W, C); (3, H, W)
         and (4, H, W) are ambiguous and raise, telling you which `channels=` to pass.
@@ -704,104 +910,92 @@ class Panel:
         arr = to_grid(x, rows=rows, cols=cols, griddim=griddim, vmin=vmin, vmax=vmax, scale_each=scale_each,
                       channels=channels, padding=padding, pad_value=pad_value, max_images=max_images,
                       max_cols=max_cols)
-        if spec["kind"] != "image" or spec["cmap"] != cmap:
-            spec["kind"], spec["cmap"] = "image", cmap
+        if kwargs != spec["kw"].get("imshow", {}):
+            taken = sorted({"X", "vmin", "vmax", "norm"} & set(kwargs))
+            assert not taken, f"{taken}: liveplot scales the pixels itself (see vmin / vmax above)"
+            _try("imshow", [[0, 1], [1, 0]], **kwargs)
+        if spec["kind"] != "image" or spec["cmap"] != cmap or spec["kw"].get("imshow", {}) != kwargs:
+            spec["kind"], spec["cmap"], spec["kw"]["imshow"] = "image", cmap, kwargs
             self._plot._send_layout()
         self._plot._send_image(self._index, arr)
         return self
 
-    def _set(self, key, value):
+    def _set(self, key, value, kw=None):
         self.spec[key] = value
+        if kw is not None:
+            self.spec["kw"][key] = kw
         self._plot._send_layout()
 
-    def set_title(self, label):
-        self._set("title", str(label))
+    def set_title(self, label, fontdict=None, loc=None, pad=None, **kwargs):
+        """Like `Axes.set_title`, text kwargs included: `set_title("training", fontsize=10, loc="left")`."""
+        kw = _text_kw(kwargs, fontdict=fontdict, loc=loc, pad=pad)
+        _try("set_title", str(label), **kw)
+        self._set("title", str(label), kw)
 
-    def legend(self, **kwargs):
+    def legend(self, *args, **kwargs):
         """
-        Like `Axes.legend`, for the panel's one legend (both y-axes' curves and its reference lines):
-        kwargs go to matplotlib, e.g. `legend(loc="upper left", ncols=3)`, or
+        Like `Axes.legend`, for the panel's one legend (both y-axes' curves and its labelled reference
+        lines): kwargs go to matplotlib, e.g. `legend(loc="upper left", ncols=3)`, or
         `legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncols=3)` to put it under the panel.
+        Every panel has a legend already; this only moves or styles it. What it lists comes from the
+        labels: `ax.plot("loss", label="train")`, `axhline(..., label=...)`, and a label starting with
+        "_" leaves an artist out, as in matplotlib.
         """
+        assert not args, (
+            "legend() takes keyword arguments only: the entries come from the labels given to plot(), "
+            "axhline() and axvline() (a label starting with '_' leaves one out)"
+        )
+        _try("legend", [], [], **kwargs)
         self._set("legend", kwargs)
 
-    def set_xlabel(self, xlabel):
-        self._set("xlabel", str(xlabel))
+    def set_xlabel(self, xlabel, fontdict=None, labelpad=None, *, loc=None, **kwargs):
+        kw = _text_kw(kwargs, fontdict=fontdict, labelpad=labelpad, loc=loc)
+        _try("set_xlabel", str(xlabel), **kw)
+        self._set("xlabel", str(xlabel), kw)
 
-    def set_xlim(self, left=None, right=None):
-        self._set("xlim", _lim(left, right))
+    def set_xlim(self, left=None, right=None, *, xmin=None, xmax=None):
+        """Like `Axes.set_xlim`: `set_xlim(0, 1000)`, `set_xlim((0, 1000))`, or one end, `set_xlim(left=100)`."""
+        self._set("xlim", _lim(left, right, xmin, xmax))
+
+    def set_xscale(self, value, **kwargs):
+        """Like `Axes.set_xscale`: "linear", "log", "symlog", ..., with the scale's kwargs."""
+        _try("set_xscale", value, **kwargs)
+        self._set("xscale", value, kwargs)
 
     def set_smooth(self, weight):
         """wandb-style smoothing weight in [0, 1) for every curve on this panel; 0 turns it off."""
         self._set("smooth", _check_smooth(weight))
 
-    def axvline(self, x=None, label=None, **kwargs):
-        """Like `Axes.axvline`, on this panel only: a vertical line at `x` (default: the current step)."""
-        line = {**kwargs, "x": float(self._plot.step if x is None else x), "label": label}
+    def axvline(self, x=0, ymin=0, ymax=1, **kwargs):
+        """
+        Like `Axes.axvline`: a vertical line at `x`, dotted grey unless kwargs say otherwise, with a
+        `label` for the legend. To mark the current point of a run: `ax.axvline(plot.step, label="lr drop")`.
+        """
+        line = {**kwargs, "x": float(x), **({"ymin": ymin, "ymax": ymax} if (ymin, ymax) != (0, 1) else {})}
+        _try("axvline", **line)
         self.spec["axvlines"].append(line)
         self._plot._send_layout()
 
     def set(self, **kwargs):
-        """Like `Axes.set`: `panel.set(title="training", xlabel="examples", ylim=(0, 1))`."""
+        """Like `Axes.set`: `ax.set(title="training", xlabel="examples", ylim=(0, 1), yscale="log")`."""
         for key, value in kwargs.items():
             getattr(self, f"set_{key}")(value)
 
     # y-setters act on the left axis, as on a matplotlib Axes
-    def set_ylabel(self, ylabel):
-        self.left.set_ylabel(ylabel)
+    def set_ylabel(self, ylabel, fontdict=None, labelpad=None, *, loc=None, **kwargs):
+        self.left.set_ylabel(ylabel, fontdict, labelpad, loc=loc, **kwargs)
 
-    def set_ylim(self, bottom=None, top=None):
-        self.left.set_ylim(bottom, top)
+    def set_ylim(self, bottom=None, top=None, *, ymin=None, ymax=None):
+        self.left.set_ylim(bottom, top, ymin=ymin, ymax=ymax)
 
-    def set_yscale(self, value):
-        self.left.set_yscale(value)
+    def set_yscale(self, value, **kwargs):
+        self.left.set_yscale(value, **kwargs)
 
-    def axhline(self, y, label=None, **kwargs):
-        self.left.axhline(y, label, **kwargs)
+    def axhline(self, y=0, xmin=0, xmax=1, **kwargs):
+        self.left.axhline(y, xmin, xmax, **kwargs)
 
     def __repr__(self):
         return f"Panel({self._index}: {' '.join(self.spec['metrics'])}{' | ' + ' '.join(self.spec['secondary']) if self.spec['secondary'] else ''})"
-
-
-class _PanelGrid:
-    """
-    The panel array `LivePlot.subplots` returns, indexable the way matplotlib's is: `axes[0][1]`
-    and `axes[0, 1]` both work, `axes.flat` walks it in row-major order, and it unpacks.
-    """
-
-    def __init__(self, rows: list):
-        self._rows = rows
-
-    def __getitem__(self, key):
-        if isinstance(key, tuple):
-            row, col = key
-            return self._rows[row][col]
-        return self._rows[key]
-
-    def __len__(self):
-        return len(self._rows)
-
-    def __iter__(self):
-        return iter(self._rows)
-
-    @property
-    def flat(self) -> list:
-        return [panel for row in self._rows for panel in row]
-
-    @property
-    def shape(self) -> tuple:
-        return (len(self._rows), len(self._rows[0]))
-
-    def _squeezed(self):
-        """matplotlib's squeeze: 1x1 -> the panel, 1xN or Nx1 -> a flat list, else the grid."""
-        flat = self.flat
-        if len(flat) == 1:
-            return flat[0]
-        rows, cols = self.shape
-        return flat if rows == 1 or cols == 1 else self
-
-    def __repr__(self):
-        return f"_PanelGrid({self.shape[0]}x{self.shape[1]})"
 
 
 # --------------------------------------------------------------------------- the handle
@@ -840,11 +1034,13 @@ class LivePlot:
         """
         iterable, specs = (args[0], args[1:]) if args and not isinstance(args[0], (str, dict)) else (None, args)
         self.smooth = _check_smooth(smooth)  # default TWEMA weight for panels that don't set their own (wandb's smoothing slider)
-        self._panel_defaults: dict = {}  # plot-level set_*() values, applied to panels created later
+        self._panel_defaults: dict = {}  # set_all() kwargs, applied to panels created later
         self._specs = [self._with_defaults(_normalise_panel(p)) for p in specs]
         self._explicit_layout = bool(self._specs)
         self._placed = {n for p in self._specs for n in p["metrics"] + p["secondary"]}
-        self._layout = (max_cols, rows, cols, cell_size, dpi, unit)
+        # the grid and figure options the renderer needs; the dict holds subplots()' grid options and
+        # the figure-level text (suptitle / supxlabel / supylabel)
+        self._layout = (max_cols, rows, cols, cell_size, dpi, unit, {})
         self._iterable, self._bar, self._desc, self._progress = iterable, None, desc, progress
         self._own_bar = None  # the bar update() opened, which finish() closes
         if total is None and iterable is not None:
@@ -863,7 +1059,6 @@ class LivePlot:
         self._record = bool(record)
         self._record_path = record if isinstance(record, str) else None
         self.frames: list[tuple[float, bytes]] = []  # (time, png) of every frame shown, if record=True
-        self.axvlines: list[dict] = []  # vertical reference lines added with axvline()
         self._images: dict[int, object] = {}  # panel index -> the uint8 array it is showing
         self._image_steps: dict[int, object] = {}  # panel index -> the x it was shown at
         self._fixed_grid = False  # set by subplots(): grow a panel's metrics, never the grid
@@ -904,105 +1099,133 @@ class LivePlot:
     def _with_defaults(self, panel):
         if panel["smooth"] is None:
             panel["smooth"] = self.smooth
-        for key, value in self._panel_defaults.items():  # plot-level set_xlabel(...) etc. made before the panel existed
-            panel[key] = value
         return panel
 
+    def _add_panel(self, spec) -> int:
+        """Append a panel, with the plot's smoothing default and whatever `set_all` has asked of every panel."""
+        self._specs.append(self._with_defaults(spec))
+        index = len(self._specs) - 1
+        if self._panel_defaults:
+            Panel(self, index).set(**self._panel_defaults)
+        return index
+
     @classmethod
-    def subplots(cls, nrows: int = 1, ncols: int = 1, *, figsize=None, squeeze: bool = True,
-                 width_ratios=None, height_ratios=None, iterable=None, **kwargs):
+    def subplots(cls, nrows: int = 1, ncols: int = 1, *, sharex=False, sharey=False, squeeze: bool = True,
+                 width_ratios=None, height_ratios=None, subplot_kw=None, gridspec_kw=None, figsize=None,
+                 iterable=None, **kwargs):
         """
         Like `plt.subplots`, for a live plot: returns `(plot, axes)` with a fixed nrows x ncols grid
-        of empty panels, which you then fill with `ax.plot("loss", ...)` or `ax.imshow(tensor)`.
+        of empty panels, which you then fill with `ax.plot("loss")` or `ax.imshow(tensor)`.
 
             plot, (ax_loss, ax_samples) = LivePlot.subplots(1, 2, total=n_steps, figsize=(11, 4))
-            ax_loss.plot("lossD", "lossG")
+            ax_loss.plot("lossD")
+            ax_loss.plot("lossG")
             ax_samples.imshow(netG(fixed_noise), rows=2, vmin=-1, vmax=1)
 
-        `axes` follows matplotlib's squeeze rules: one panel for 1x1, a flat list for a single row
-        or column, a 2-d grid otherwise. `figsize` is the whole figure in inches, as matplotlib
-        means it (liveplot's own `cell_size` is per panel). `width_ratios` / `height_ratios` are
-        matplotlib's too, e.g. `width_ratios=(1, 1.3)` to give an image panel more room. Every other
-        keyword goes to `LivePlot`.
+        The arguments are matplotlib's. `axes` is a numpy array of panels squeezed as matplotlib does
+        (one panel for 1x1, 1-d for a single row or column, 2-d otherwise; `squeeze=False` always
+        2-d), so `axes[0, 1]`, `axes.flat` and `axes.flatten()` all work. `figsize` is the whole
+        figure in inches (liveplot's own `cell_size` is per panel); `sharex` / `sharey`,
+        `width_ratios` / `height_ratios` and `gridspec_kw` go to matplotlib's grid; `subplot_kw` is
+        applied to every panel with `Panel.set`, e.g. `subplot_kw=dict(xlabel="examples")`. Every
+        other keyword goes to `LivePlot` (`total=`, `unit=`, ...).
         """
+        import numpy as np
+
         assert nrows >= 1 and ncols >= 1, f"need at least a 1x1 grid, got {nrows}x{ncols}"
+        for name, share in (("sharex", sharex), ("sharey", sharey)):
+            assert share in (True, False, "all", "row", "col", "none"), \
+                f"{name} must be a bool or one of 'all', 'row', 'col', 'none', got {share!r}"
         kwargs.setdefault("rows", nrows)
         kwargs.setdefault("cols", ncols)
         if figsize is not None:
             kwargs["cell_size"] = (figsize[0] / ncols, figsize[1] / nrows)
+        gridspec_kw = dict(gridspec_kw or {})
+        for key, value, count in (("width_ratios", width_ratios, ncols), ("height_ratios", height_ratios, nrows)):
+            if value is not None:
+                assert key not in gridspec_kw, f"'{key}' must not be defined both as parameter and as key in 'gridspec_kw'"
+                gridspec_kw[key] = list(value)
+            if key in gridspec_kw:
+                assert len(gridspec_kw[key]) == count, f"{key} needs one entry per {'column' if count == ncols else 'row'}"
         plot = cls(*([] if iterable is None else [iterable]), **kwargs)
-        gridspec_kw = {k: list(v) for k, v in (("width_ratios", width_ratios), ("height_ratios", height_ratios)) if v is not None}
-        if gridspec_kw:
-            assert len(gridspec_kw.get("width_ratios", [0] * ncols)) == ncols, "width_ratios needs one entry per column"
-            assert len(gridspec_kw.get("height_ratios", [0] * nrows)) == nrows, "height_ratios needs one entry per row"
-            plot._layout = (*plot._layout[:6], gridspec_kw)
-        plot._specs.extend(
-            plot._with_defaults(_normalise_panel({"metrics": []}, allow_empty=True)) for _ in range(nrows * ncols)
-        )
+        plot._layout[6].update(gridspec_kw=gridspec_kw, sharex=sharex, sharey=sharey)
+        for _ in range(nrows * ncols):
+            plot._add_panel(_normalise_panel({"metrics": []}, allow_empty=True))
         plot._explicit_layout = True
         plot._fixed_grid = True
+        axes = np.empty((nrows, ncols), dtype=object)
+        for r in range(nrows):
+            for c in range(ncols):
+                axes[r, c] = Panel(plot, r * ncols + c)
+                if subplot_kw:
+                    axes[r, c].set(**subplot_kw)
         plot._send_layout()
-        grid = _PanelGrid([[Panel(plot, r * ncols + c) for c in range(ncols)] for r in range(nrows)])
-        return plot, (grid._squeezed() if squeeze else grid)
+        if squeeze:
+            axes = axes.item() if axes.size == 1 else axes.squeeze()
+        return plot, axes
 
-    # -- panels and axes, addressed like matplotlib -----------------------------------
+    # -- the figure: its panels, and figure-level text ---------------------------------
 
     @property
-    def panels(self) -> list:
-        """The panels of the grid, in order: `plot.panels[0].set_title("training")`."""
+    def axes(self) -> list:
+        """Like `Figure.axes`: the panels, in order. `plot.axes[0].set_title("training")`."""
         return [Panel(self, i) for i in range(len(self._specs))]
+
+    def _axis_of(self, metric: str):
+        """(panel index, right-hand axis?) of the axis `metric` is drawn on, or None if it isn't placed yet."""
+        for i, spec in enumerate(self._specs):
+            if metric in spec["metrics"]:
+                return i, False
+            if metric in spec["secondary"]:
+                return i, True
+        return None
 
     def __getitem__(self, metric: str) -> _Axis:
         """
         The y-axis that holds `metric`: `plot["acc"].set_ylim(0, 1)`. Right-hand axes are found too,
         which is what makes the left/right distinction disappear from the API. A metric that hasn't
-        been logged yet gets its panel created now.
+        been logged yet gets its panel created now. (matplotlib has no lookup by series name; this is
+        liveplot's, for a plot whose panels came from logging rather than from `subplots`.)
         """
         if metric not in self._placed:
             self.data.setdefault(metric, ([], []))
             self._extend_layout([metric])
-        for i, spec in enumerate(self._specs):
-            if metric in spec["metrics"]:
-                return _Axis(self, i, right=False)
-            if metric in spec["secondary"]:
-                return _Axis(self, i, right=True)
-        raise KeyError(metric)
+        where = self._axis_of(metric)
+        if where is None:
+            raise KeyError(metric)
+        return _Axis(self, where[0], right=where[1])
 
-    def _set_all(self, key, value):
-        """A plot-level setter: every existing panel, and every panel created later."""
-        self._panel_defaults[key] = value
-        for spec in self._specs:
-            spec[key] = value
+    def _figure_text(self, method: str, text, kwargs):
+        from matplotlib.figure import Figure
+
+        getattr(Figure(), method)(str(text), **kwargs)  # matplotlib's own check of the kwargs (see `_try`)
+        self._layout[6][method] = (str(text), kwargs)
         self._send_layout()
 
-    def set_title(self, label):
-        self._set_all("title", str(label))
+    def suptitle(self, t, **kwargs):
+        """Like `Figure.suptitle`: a title over the whole figure, e.g. `plot.suptitle("run 3", fontsize=12)`."""
+        self._figure_text("suptitle", t, kwargs)
 
-    def set_xlabel(self, xlabel):
-        self._set_all("xlabel", str(xlabel))
+    def supxlabel(self, t, **kwargs):
+        """Like `Figure.supxlabel`: one x-label under the whole grid."""
+        self._figure_text("supxlabel", t, kwargs)
 
-    def set_xlim(self, left=None, right=None):
-        self._set_all("xlim", _lim(left, right))
+    def supylabel(self, t, **kwargs):
+        """Like `Figure.supylabel`: one y-label beside the whole grid."""
+        self._figure_text("supylabel", t, kwargs)
 
-    def set_ylabel(self, ylabel):
-        self._set_all("ylabel", str(ylabel))
-
-    def set_ylim(self, bottom=None, top=None):
-        self._set_all("ylim", _lim(bottom, top))
-
-    def set_yscale(self, value):
-        assert value in ("linear", "log"), f"yscale must be 'linear' or 'log', got {value!r}"
-        self._set_all("yscale", value)
-
-    def set_smooth(self, weight):
-        """wandb-style smoothing weight in [0, 1) for every panel (and the default for later ones)."""
-        self.smooth = _check_smooth(weight)
-        self._set_all("smooth", weight)
-
-    def set(self, **kwargs):
-        """Like `Axes.set`, on every panel: `plot.set(xlabel="examples", yscale="log")`."""
-        for key, value in kwargs.items():
-            getattr(self, f"set_{key}")(value)
+    def set_all(self, **kwargs):
+        """
+        `Panel.set(**kwargs)` on every panel, now and for any panel created later (a metric logged for
+        the first time gets its panel with these settings too): `plot.set_all(xlabel="examples",
+        smooth=0.9, yscale="log")`. matplotlib's way is a loop over `fig.axes`, which also works here,
+        `for ax in plot.axes: ax.set(...)`, but a loop cannot reach panels that don't exist yet.
+        """
+        for key in kwargs:
+            assert hasattr(Panel, f"set_{key}"), f"set_all({key}=...): a panel has no set_{key}()"
+        self._panel_defaults.update(kwargs)
+        for panel in self.axes:
+            panel.set(**kwargs)
 
     def _panels_or_placeholder(self):
         return self._specs or [_normalise_panel({"title": "waiting for data…", "metrics": ["_"]})]
@@ -1198,9 +1421,9 @@ class LivePlot:
             self._join_panel(empty[0] if empty else curves[0], unplaced)
         elif self._explicit_layout:
             for m in unplaced:
-                self._specs.append(self._with_defaults(_normalise_panel({"metrics": [m]})))
+                self._add_panel(_normalise_panel({"metrics": [m]}))
         elif not curves:  # nothing but image panels so far (plot.imshow() before the first log)
-            self._specs.append(self._with_defaults(_normalise_panel({"metrics": unplaced})))
+            self._add_panel(_normalise_panel({"metrics": unplaced}))
         else:
             self._join_panel(curves[0], unplaced)
         self._placed.update(unplaced)
@@ -1215,46 +1438,19 @@ class LivePlot:
         if was_auto:  # a title set with set_title() survives a newly discovered metric
             spec["title"] = " / ".join(spec["metrics"] + spec["secondary"])
 
-    def axhline(self, y, label=None, *, metric=None, **kwargs):
-        """
-        Like matplotlib's `Axes.axhline`: a horizontal reference line at `y` with `label` in the legend,
-        dashed grey by default; any other kwargs (color, linestyle, linewidth, alpha, ...) go to the
-        artist. It goes on the axis of `metric`'s panel, or on the left axis of every panel if `metric`
-        is None. E.g. the loss a model must beat: `plot.axhline(math.log(d_vocab), "uniform", metric="loss")`.
-        """
-        if metric is not None:
-            return self[metric].axhline(y, label, **kwargs)
-        line = {**kwargs, "y": float(y), "label": str(label) if label is not None else f"{float(y):g}"}
-        for spec in self._specs:
-            spec["axhlines"].append(line)
-        self._send_layout()
-
-    def axvline(self, x=None, label=None, **kwargs):
-        """
-        Like matplotlib's `Axes.axvline`, on every panel: a vertical line at `x` (default: the current
-        step), dotted grey by default, with `label` written along it; other kwargs go to the artist.
-        E.g. `plot.axvline(label="lr drop")` where the learning rate changes.
-        """
-        line = {**kwargs, "x": float(self.step if x is None else x), "label": label}
-        self.axvlines.append(line)
-        if self.mode == "process":
-            self._inbox.put(("axvline", line))
-        elif self.mode == "thread":
-            self._renderer.add_axvline(line)
-
     def imshow(self, x, **kwargs):
         """
-        Show an image on the plot, replacing whatever was there -- the whole of `LiveImage` in one
-        call. Uses the plot's image panel, creating it on first use. Keywords go to `Panel.imshow`.
+        Like pyplot's `plt.imshow`, which draws on the current Axes: show an image on the plot's image
+        panel, creating it on first use, replacing whatever was there. Keywords go to `Panel.imshow`.
         """
         for i, spec in enumerate(self._specs):
             if spec["kind"] == "image":
                 return Panel(self, i).imshow(x, **kwargs)
         assert not self._fixed_grid, \
             "this plot's grid comes from subplots(); call imshow() on one of its panels instead"
-        self._specs.append(self._with_defaults(_normalise_panel({"kind": "image"})))
+        index = self._add_panel(_normalise_panel({"kind": "image"}))
         self._send_layout()
-        return Panel(self, len(self._specs) - 1).imshow(x, **kwargs)
+        return Panel(self, index).imshow(x, **kwargs)
 
     def _place(self, metrics):
         """Record metrics as already belonging to a panel, and redraw."""
@@ -1291,8 +1487,6 @@ class LivePlot:
         renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout, images=self._image_state())
         for name, (xs, ys) in self.data.items():
             renderer.hist[name] = (list(xs), list(ys))
-        for line in self.axvlines:
-            renderer.add_axvline(line)
         renderer.render()  # sets the line data and autoscales
         return renderer.fig
 
@@ -1372,8 +1566,6 @@ class LivePlot:
             renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout, images=self._image_state())
             for name, (xs, ys) in self.data.items():
                 renderer.hist[name] = (list(xs), list(ys))
-            for line in self.axvlines:
-                renderer.add_axvline(line)
         except Exception as e:  # noqa: BLE001
             self.mode = "off"
             warnings.warn(
