@@ -128,6 +128,7 @@ License, Copyright (c) 2023 Tyler Lum) -- see THIRD_PARTY_LICENSES.md.
 
 from __future__ import annotations
 
+import atexit
 import io
 import math
 import multiprocessing as mp
@@ -520,6 +521,19 @@ def _terminate(proc, inbox):
             proc.terminate()
 
 
+_SAVE_EVERY_SECONDS = 2.0  # how often save="run.png" is rewritten while training
+
+
+def _finish_at_exit(plot_ref):
+    """At interpreter exit: finish a plot that never was (a crash, Ctrl-C), so `save` / `record` files get written."""
+    plot = plot_ref()
+    if plot is not None and not plot._done:
+        try:
+            plot.finish()
+        except Exception:  # noqa: BLE001 - nothing useful to do with an error at exit
+            pass
+
+
 def _collect_loop(plot_ref, outbox, proc, done):
     """
     Background thread of a LivePlot: show each frame as the renderer produces it (only the newest
@@ -787,7 +801,8 @@ class Axes:
         return [_Line(self._plot, self._index, name)]
 
     def imshow(self, x, *, rows=None, cols=None, griddim=None, vmin=None, vmax=None, scale_each=False,
-               channels=None, cmap="gray", padding=0, pad_value=0, max_images=64, max_cols=8, **kwargs):
+               channels=None, cmap="gray", padding=0, pad_value=0, max_images=64, max_cols=8, show_step=True,
+               **kwargs):
         """
         Like `Axes.imshow`, but for a whole batch and repeatable: show `x` on this panel, replacing
         whatever was there. A batch is tiled into a grid -- `rows` or `cols` alone infers the other,
@@ -795,7 +810,8 @@ class Axes:
         the grid is near-square (3 -> 2x2, 5 -> 3x2, 8 -> 3x3, 64 -> 8x8), at most `max_cols` wide.
         Only the first `max_images` are shown, with a warning (`max_images=None` for all of them).
         Images sit edge to edge; `padding` puts that many pixels of `pad_value` between them. The
-        title shows the step the image was drawn at. Other kwargs (`interpolation`, `aspect`, ...) go
+        title shows the step the image was drawn at (the number of steps done so far), so you can tell
+        how old it is; `show_step=False` leaves the title as you set it. Other kwargs (`interpolation`, `aspect`, ...) go
         to matplotlib's `imshow`; the default interpolation is "nearest", so pixels stay crisp.
 
         Accepts (H, W), (C, H, W), (H, W, C), (B, H, W), (B, C, H, W) and (B, H, W, C); (3, H, W)
@@ -822,7 +838,7 @@ class Axes:
         if spec["kind"] != "image" or spec["cmap"] != cmap or spec["kw"].get("imshow", {}) != kwargs:
             spec["kind"], spec["cmap"], spec["kw"]["imshow"] = "image", cmap, kwargs
             self._plot._send_layout()
-        self._plot._send_image(self._index, arr)
+        self._plot._send_image(self._index, arr, show_step)
         return self
 
     def axhline(self, y=0, xmin=0, xmax=1, **kwargs):
@@ -919,8 +935,9 @@ def _say_nothing_is_drawn():
     if not _said_nothing_is_drawn:
         _said_nothing_is_drawn = True
         warnings.warn(
-            'LivePlot: not in a notebook, so nothing is drawn live. Every value is kept in plot.data, and '
-            'plot.savefig("run.png") saves the plot (record="run.gif" records it as it trains).',
+            'LivePlot: not in a notebook, so nothing is drawn live. Every value is kept in plot.data; '
+            'LivePlot(..., save="run.png") writes the plot to a file as it trains (record="run.gif" '
+            'records an animation).',
             stacklevel=3,
         )
 
@@ -946,6 +963,7 @@ class LivePlot:
         progress: bool = True,
         desc: str | None = None,
         record: bool | str = False,
+        save: str | os.PathLike | None = None,
         smooth: float | None = None,
     ):
         """
@@ -959,6 +977,10 @@ class LivePlot:
             docstring). With none, every logged metric shares one panel.
         total, initial, unit, unit_scale: tqdm's arguments, with tqdm's meaning; they define the
             x-axis (see module docstring).
+        save: a path such as "run.png". The plot is written there as it trains (a .png is rewritten
+            at most every few seconds, so it is never far behind) and once more when the plot
+            finishes -- or, if `finish()` is never reached, when Python exits. Works in a notebook or
+            in a plain script, where nothing else is drawn.
         """
         iterable, specs = (args[0], args[1:]) if args and not isinstance(args[0], str) else (None, args)
         for spec in specs:
@@ -992,6 +1014,8 @@ class LivePlot:
         self._last_x = initial  # x of the last explicit `log(step, ...)`; used when nothing is wrapped
         self._record = bool(record)
         self._record_path = record if isinstance(record, str) else None
+        self._save_path = os.fspath(save) if save is not None else None
+        self._last_save = 0.0
         self.frames: list[tuple[float, bytes]] = []  # (time, png) of every frame shown, if record=True
         self._images: dict[int, object] = {}  # panel index -> the uint8 array it is showing
         self._image_steps: dict[int, object] = {}  # panel index -> the x it was shown at
@@ -1002,7 +1026,9 @@ class LivePlot:
         self._last_draw = self._last_postfix = 0.0
         self._n_logs = 0
         self._handle = self._make_display_handle()
-        if self._handle is None and not self._record:
+        if self._record_path or self._save_path:
+            atexit.register(_finish_at_exit, weakref.ref(self))  # a script that crashes still writes its files
+        if self._handle is None and not self._record and not self._save_path:
             self.mode = "off"  # not in a notebook: nothing to draw on, just collect metrics
             _say_nothing_is_drawn()
             return
@@ -1027,7 +1053,10 @@ class LivePlot:
             from IPython.display import HTML, display
         except ImportError:
             return None
-        if get_ipython() is None:
+        shell = get_ipython()
+        # A notebook (Jupyter, Colab, VS Code) runs a kernel; terminal IPython has the same shell API
+        # but nothing to update in place, and would print every frame into the terminal.
+        if shell is None or getattr(shell, "kernel", None) is None:
             return None
         return display(HTML("<i>live plot: waiting for the first frame…</i>"), display_id=True)
 
@@ -1406,8 +1435,8 @@ class LivePlot:
             self.data.setdefault(name, ([], []))
         self._send_layout()
 
-    def _send_image(self, index: int, arr):
-        x = self.step if self._wrapping or self.latest else None  # a step in the title only once there are steps
+    def _send_image(self, index: int, arr, show_step: bool = True):
+        x = self.step if show_step and (self._wrapping or self.latest) else None  # a step in the title only once there are steps
         self._images[index], self._image_steps[index] = arr, x
         if self.mode == "process":
             self._inbox.put(("image", index, arr, x))
@@ -1472,6 +1501,16 @@ class LivePlot:
                 self._own_bar.close()
             if self._record_path and self.frames:
                 self.save_gif(self._record_path)
+            if self._save_path:
+                self._write_atomic(self._save_path, self.savefig)
+
+    @staticmethod
+    def _write_atomic(path: str, write):
+        """`write(tmp)` then rename over `path`, so a viewer never reads a half-written file."""
+        root, ext = os.path.splitext(path)
+        tmp = f"{root}.liveplot-tmp{ext}"  # same extension: savefig picks the format from it
+        write(tmp)
+        os.replace(tmp, path)
 
     def save_gif(self, path, speedup: float = 1.0, max_frame_ms: int = 1000, hold_last_ms: int = 1500, colors: int = 256):
         """
@@ -1537,6 +1576,13 @@ class LivePlot:
         self._last_draw = time.monotonic()
         if self._record:
             self.frames.append((time.monotonic() - self._t0, png))
+        if self._save_path and self._save_path.lower().endswith(".png") and not self._done \
+                and self._last_draw - self._last_save >= _SAVE_EVERY_SECONDS:
+            self._last_save = self._last_draw
+            try:
+                self._write_atomic(self._save_path, lambda tmp: open(tmp, "wb").write(png))
+            except OSError as e:  # a full disk or a vanished directory must not stop training
+                warnings.warn(f"LivePlot: could not write {self._save_path}: {e}", stacklevel=2)
         if self._handle is not None:
             from IPython.display import Image
 

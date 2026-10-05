@@ -84,6 +84,7 @@ Interrupting the cell is safe. Jupyter sends its interrupt to every process the 
 | `progress`, `desc` | disable the bundled tqdm bars, or give the single-loop form's bar a description |
 | `figsize`, `cell_size`, `dpi` | the whole figure's size in inches, as matplotlib means it, however many panels it ends up with; without it, each panel is `cell_size` (default `(5, 3.5)`). `dpi` is the PNG resolution. |
 | `record` | `True` keeps every rendered frame in `plot.frames`; a path such as `"run.gif"` also writes an animated GIF at `finish()`. `plot.save_gif(path, speedup=1.0)` does it on demand. Works outside a notebook too. |
+| `save` | a path such as `"run.png"`: the plot is written there as it trains (a `.png` is rewritten at most every 2 s, atomically, so a viewer never sees half a file) and once more at `finish()`. Any other extension matplotlib knows (`.pdf`, `.svg`) is written at `finish()` only. For scripts and remote runs: open the PNG in your editor and it refreshes as training goes. |
 
 ## Titles, labels, limits: matplotlib's names
 
@@ -109,7 +110,9 @@ There is one `Axes` type, as in matplotlib: `plot.axes[i]` and `subplots` give a
 
 The plot-level object is the figure, not every panel at once: `plot.set_title` does not exist (use `plot.suptitle`, or `plot.axes[0].set_title`). To set something on every panel, loop as you would over `fig.axes` -- `for ax in plot.axes: ax.set(...)` -- or use `plot.set_all(...)`, which also reaches panels a metric logged later creates.
 
-`plot.savefig("run.png")` saves the plot as it stands, like `Figure.savefig`, and `plot.snapshot()` returns it as a matplotlib Figure to tweak or add to; both are built independently of the live renderer and work in or out of a notebook. Outside a notebook nothing is drawn live, and liveplot says so once rather than leaving you wondering; `plot.data` still collects everything.
+`plot.savefig("run.png")` saves the plot as it stands, like `Figure.savefig`, and `plot.snapshot()` returns it as a matplotlib Figure to tweak or add to; both are built independently of the live renderer and work in or out of a notebook. Outside a notebook nothing is drawn live, and liveplot says so once rather than leaving you wondering; `plot.data` still collects everything, and `save="run.png"` gives you the plot as a file. Terminal IPython counts as outside a notebook (it has no kernel to update an output in place).
+
+A plot is finished by `plot.finish()`, by the end of a `for x in LivePlot(...)` loop however it ends, or by leaving a `with LivePlot(...)` block. A plot with `save` or `record` that never gets there -- a script that crashes, is stopped with Ctrl-C, or forgets `finish()` -- is finished when Python exits, so its files are still written. (A process killed outright gets no chance to; the periodic `.png` rewrite is what you have then.)
 
 `plot.log` accepts keywords, an explicit step (`plot.log(step, loss=...)`), or a dict (`plot.log(step, {"loss": ...})`). Values can be anything `float()` accepts, including one-element tensors, which are detached first, so `plot.log(loss=loss)` is fine without `.item()`. `plot.data` holds the full history as `{metric: (steps, values)}` and `plot.latest` the most recent value of each.
 
@@ -211,6 +214,11 @@ outright; torch holds images that way, so the ambiguity is ours to resolve rathe
 Torch tensors go straight in: the conversion (`detach`, off the GPU, tile, scale to `uint8`) happens
 on the calling thread, costs about 0.2 ms for ten 64x64 RGB samples, and means the render process
 only ever unpickles a finished picture. Nothing in liveplot imports torch.
+
+The panel's title says when the picture was drawn, as `"samples (step 250)"`: an image is only
+redrawn when you call `imshow`, so it can be older than the curves beside it. The step is the
+number of steps done so far, the same x the curves use. `imshow(..., show_step=False)` leaves the
+title exactly as you set it.
 
 ### Scaling
 
