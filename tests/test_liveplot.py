@@ -91,6 +91,13 @@ def test_x_axis_follows_tqdm_counting():
     assert s.data["loss"][0] == [0, 1, 2] and s.data["acc"][0] == [1000, 1001, 1002]
 
 
+def test_fixed_x_false_grows_the_axis_but_keeps_the_total():
+    p = LivePlot(range(5), "loss", progress=False, fixed_x=False)
+    assert [s for s in p] == [0, 1, 2, 3, 4]
+    assert p.total == 5 and p.x_range is None              # the bar still knows the total; the axis autoscales
+    assert LivePlot(range(5), "loss", progress=False).x_range == (0, 5)   # default: spans the whole run
+
+
 def test_nested_loops_continue_the_count():
     loader = ["batch"] * 4
     p = LivePlot("loss", "acc", total=3 * len(loader), progress=False)
