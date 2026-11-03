@@ -79,6 +79,7 @@ Interrupting the cell is safe. Jupyter sends its interrupt to every process the 
 | | |
 |---|---|
 | `total`, `initial`, `unit`, `unit_scale` | tqdm's arguments, with tqdm's meaning; they define the x-axis (see above) |
+| `fixed_x` | `True` (default): with a known `total`, the x-axis spans the whole run from the start. `False`: it grows with the data, while the progress bar still shows the total |
 | `refresh_seconds` | minimum time between redraws (default 1.0). Points arriving in between are batched into the next frame. `0` redraws whenever new data arrives, as fast as rendering allows (roughly 0.15 s per frame at a few thousand points), and costs nothing while idle. |
 | `max_cols`, `rows`, `cols` | grid shape; `max_cols=None` gives a near-square grid |
 | `progress`, `desc` | disable the bundled tqdm bars, or give the single-loop form's bar a description |

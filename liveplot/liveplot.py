@@ -825,6 +825,7 @@ class LivePlot:
         desc: str | None = None,
         record: bool | str = False,
         smooth: float | None = None,
+        fixed_x: bool = True,
     ):
         """
         LivePlot([iterable,] *panels, total=None, initial=0, unit="step", unit_scale=1, ...)
@@ -837,6 +838,8 @@ class LivePlot:
             module docstring). With none, every logged metric shares one panel.
         total, initial, unit, unit_scale: tqdm's arguments, with tqdm's meaning; they define the
             x-axis (see module docstring).
+        fixed_x: with a known total, the x-axis spans the whole run from the start. False lets it grow
+            with the data instead, while the progress bar still shows the total (percentage, ETA).
         """
         iterable, specs = (args[0], args[1:]) if args and not isinstance(args[0], (str, dict)) else (None, args)
         self.smooth = _check_smooth(smooth)  # default TWEMA weight for panels that don't set their own (wandb's smoothing slider)
@@ -853,6 +856,7 @@ class LivePlot:
             except TypeError:
                 pass
         self.total, self.initial, self.unit, self.unit_scale = total, initial, unit, unit_scale
+        self.fixed_x = fixed_x
         self.refresh_seconds = refresh_seconds
         self.data: dict[str, tuple[list, list]] = {}  # metric -> (x values, values); full history, this side
         self.latest: dict[str, float] = {}  # most recent value of each metric (what the tqdm postfix shows)
@@ -1082,8 +1086,8 @@ class LivePlot:
 
     @property
     def x_range(self):
-        """Default x-axis range (initial, initial + total * unit_scale), or None to autoscale."""
-        return (self.initial, self.initial + self.total * self.unit_scale) if self.total else None
+        """Default x-axis range (initial, initial + total * unit_scale), or None to autoscale (no total, or fixed_x=False)."""
+        return (self.initial, self.initial + self.total * self.unit_scale) if self.total and self.fixed_x else None
 
     @property
     def step(self):
