@@ -67,16 +67,16 @@ def test_off_mode_discovery_and_log_forms():
     assert [(pn["metrics"], pn["secondary"]) for pn in q._specs] == [(["loss"], []), (["a"], ["b"]), (["extra"], [])]
 
 
-def test_plot_and_progress_switch_off_independently(monkeypatch):
+def test_show_and_progress_switch_off_independently(monkeypatch):
     shown = []
     monkeypatch.setattr(LivePlot, "_make_display_handle", staticmethod(lambda: shown.append(1) or object()))
-    p = LivePlot(range(3), "loss", plot=False)
-    assert p.mode == "off" and p._proc is None and shown == [], "plot=False: no display handle, no render process"
+    p = LivePlot(range(3), "loss", show=False)
+    assert p.mode == "off" and p._proc is None and shown == [], "show=False: no display handle, no render process"
     for i in p:
         p.log(loss=float(i))
     assert p.data == {"loss": ([0, 1, 2], [0.0, 1.0, 2.0])}, "metrics are still collected"
     assert p.latest == {"loss": 2.0}, "and still shown on the progress bar's postfix"
-    q = LivePlot(range(3), plot=False, progress=False)
+    q = LivePlot(range(3), show=False, progress=False)
     bars = []
     for _ in q:
         bars.append(q._bar)
