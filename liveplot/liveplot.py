@@ -821,6 +821,7 @@ class LivePlot:
         cols: int | None = None,
         cell_size: tuple = (5, 3.5),
         dpi: int = 100,
+        plot: bool = True,
         progress: bool = True,
         desc: str | None = None,
         record: bool | str = False,
@@ -840,6 +841,8 @@ class LivePlot:
             x-axis (see module docstring).
         fixed_x: with a known total, the x-axis spans the whole run from the start. False lets it grow
             with the data instead, while the progress bar still shows the total (percentage, ETA).
+        plot, progress: show the live plot / the progress bar. Each can be turned off on its own: with
+            plot=False nothing is drawn, but metrics are still collected (and shown on the bar).
         """
         iterable, specs = (args[0], args[1:]) if args and not isinstance(args[0], (str, dict)) else (None, args)
         self.smooth = _check_smooth(smooth)  # default TWEMA weight for panels that don't set their own (wandb's smoothing slider)
@@ -876,9 +879,9 @@ class LivePlot:
         self._proc = self._renderer = self._inbox = self._outbox = None
         self._last_draw = self._last_postfix = 0.0
         self._n_logs = 0
-        self._handle = self._make_display_handle()
+        self._handle = self._make_display_handle() if plot else None
         if self._handle is None and not self._record:
-            self.mode = "off"  # not in a notebook: nothing to draw on, just collect metrics
+            self.mode = "off"  # plot=False, or not in a notebook: nothing to draw on, just collect metrics
             return
         try:
             self._start_process()
