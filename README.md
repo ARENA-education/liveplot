@@ -70,7 +70,7 @@ pip install "liveplot[notebook] @ git+https://github.com/ARENA-education/liveplo
 
 ## How it works
 
-The training thread only appends numbers (about 40 µs per `log`). A separate render process owns the matplotlib figure, redraws it at most once per `refresh_seconds` (default 1; `0` means on every arrival), and sends back PNG bytes that get swapped into a fixed output cell. The output is a plain image, so it behaves identically in Jupyter, Colab, VS Code and Cursor: no widgets, no JavaScript, no CDN.
+The training thread only appends numbers (about 40 µs per `log`). A separate render process owns the matplotlib figure, redraws it at most once per `refresh_seconds` (default 0.5; `0` means on every arrival), and sends back PNG bytes that get swapped into a fixed output cell. The output is a plain image, so it behaves identically in Jupyter, Colab, VS Code and Cursor: no widgets, no JavaScript, no CDN.
 
 Interrupting the cell is safe. Jupyter sends its interrupt to every process the kernel started; the render process ignores it, so you get a frozen plot with `plot.data` intact. A plot that is dropped without `finish()` shuts its process down when garbage collected, and the process exits by itself if the notebook kernel dies.
 
@@ -80,7 +80,7 @@ Interrupting the cell is safe. Jupyter sends its interrupt to every process the 
 |---|---|
 | `total`, `initial`, `unit`, `unit_scale` | tqdm's arguments, with tqdm's meaning; they define the x-axis (see above) |
 | `fixed_x` | `True` (default): with a known `total`, the x-axis spans the whole run from the start. `False`: it grows with the data, while the progress bar still shows the total |
-| `refresh_seconds` | minimum time between redraws (default 0.2). Points arriving in between are batched into the next frame. `0` redraws whenever new data arrives, as fast as rendering allows (roughly 0.15 s per frame at a few thousand points), and costs nothing while idle. |
+| `refresh_seconds` | minimum time between redraws (default 0.5). Points arriving in between are batched into the next frame. `0` redraws whenever new data arrives, as fast as rendering allows (roughly 0.15 s per frame at a few thousand points), and costs nothing while idle. |
 | `max_cols`, `rows`, `cols` | grid shape; `max_cols=None` gives a near-square grid |
 | `show` | `False`: draw nothing (metrics are still collected, and shown on the progress bar) |
 | `progress`, `desc` | disable the bundled tqdm bars, or give the single-loop form's bar a description |
@@ -117,12 +117,12 @@ The plot-level object is the figure, not every panel at once: `plot.set_title` d
 
 ## Reference lines
 
-Matplotlib's `axhline(y=0, xmin=0, xmax=1, **kwargs)` and `axvline(x=0, ymin=0, ymax=1, **kwargs)`, on an axis or a panel. They are dashed (horizontal) or dotted (vertical) grey unless kwargs say otherwise, and as in matplotlib a line is in the legend only if you give it a `label`.
+Matplotlib's `axhline(y=0, xmin=0, xmax=1, **kwargs)` and `axvline(x, ymin=0, ymax=1, **kwargs)`, on an axis or a panel. They are dashed (horizontal) or dotted (vertical) grey unless kwargs say otherwise. As in matplotlib, a horizontal line is in the legend only if you give it a `label`. Two things differ, because the x-axis is the run's progress: `axvline()` with no `x` marks the current point of the run rather than x=0, and a vertical line's `label` is written up the side of the line, where the event happened, rather than in the legend.
 
 ```python
 plot["loss"].axhline(math.log(d_vocab), label="uniform")     # the level a curve should beat
 plot["return"].axhline(500, label="solved", color="green")
-plot.axes[0].axvline(plot.step, label="lr drop")               # at the current point of the run
+plot.axes[0].axvline(label="lr drop")                          # at the current point of the run
 plot.axes[1].axvline(2000, label="checkpoint", linestyle="-")  # at a given x
 ```
 

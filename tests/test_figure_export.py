@@ -13,7 +13,8 @@ def test_figure_reflects_current_state(tmp_path):
     assert len(axes) == 3  # panel 1 left + right axis, panel 2
     ax_loss = axes[0]
     labels = [t.get_text() for t in ax_loss.get_legend().get_texts()]
-    assert labels == ["loss", "acc", "target", "halfway"]
+    assert labels == ["loss", "acc", "target"]
+    assert [t.get_text() for t in ax_loss.texts] == [" halfway"]  # an axvline's label sits by the line
     assert ax_loss.get_xlim() == (0, 1000) and ax_loss.get_xlabel() == "examples"
     assert list(ax_loss.get_lines()[0].get_xdata()) == [step * 10 for step in range(20)]
     out = tmp_path / "run.png"

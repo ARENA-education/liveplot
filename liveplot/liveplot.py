@@ -50,7 +50,7 @@ or during the loop:
     plot["acc"].set_ylabel("test accuracy", fontsize=9)
     plot["loss"].axhline(0.1, color="red", label="target")   # a label puts it in the legend
     plot.axes[0].set_title("training")         # plot.axes, like Figure.axes
-    plot.axes[0].axvline(plot.step, label="lr drop")
+    plot.axes[0].axvline(label="lr drop")       # at the current point of the run
     plot.axes[0].twinx().set_yscale("log")     # the panel's right-hand y-axis, as in matplotlib
     plot.suptitle("run 3")                     # Figure.suptitle / supxlabel / supylabel
     plot.set_all(xlabel="examples", smooth=0.9)   # every panel, including ones made later
@@ -94,7 +94,7 @@ these apply to colour images too.
 
 How it works: the training thread only appends numbers (~40 us per `log`). A
 separate *render process* owns the matplotlib figure, redraws it at most once per
-`refresh_seconds` (default 0.2; points arriving in between are batched into the
+`refresh_seconds` (default 0.5; points arriving in between are batched into the
 next frame; 0 means redraw on every arrival, as fast as rendering allows), and
 sends back PNG bytes that get swapped into a fixed output cell. The output is a plain image, so it behaves the same in Jupyter, Colab, VS
 Code and Cursor: no widgets, no CDN, no JavaScript. The progress bar is tqdm
@@ -253,6 +253,20 @@ def _grid_shape(n_panels: int, max_cols: int | None, rows: int | None, cols: int
 # --------------------------------------------------------------------------- the figure
 
 
+def _draw_axvline(ax, kw: dict):
+    """
+    A vertical reference line, dotted grey unless kw says otherwise. Its label is written up the
+    side of the line, where the event it marks happened, rather than put in the legend: a legend
+    swatch of a grey dotted line cannot say which of several such lines it means. A label starting
+    with "_" is left off, as matplotlib leaves such an artist out of the legend.
+    """
+    label = kw.get("label")
+    ax.axvline(**{**_REF_LINE_STYLE, "linestyle": ":", **kw, "label": "_axvline"})
+    if label and not str(label).startswith("_"):
+        ax.text(kw["x"], 0.98, f" {label}", transform=ax.get_xaxis_transform(), va="top", ha="left",
+                fontsize=7, color="0.3", rotation=90)
+
+
 class _FigureRenderer:
     """
     Owns one matplotlib figure and the metric history it draws. Built on the
@@ -339,7 +353,7 @@ class _FigureRenderer:
                 for line_kw in panel[key] if target is not None else []:
                     target.axhline(**{**_REF_LINE_STYLE, **line_kw})
             for line_kw in panel["axvlines"]:
-                ax.axvline(**{**_REF_LINE_STYLE, "linestyle": ":", **line_kw})
+                _draw_axvline(ax, line_kw)
             ax.set_title(panel["title"], **kw.get("title", {}))
             ax.set_xlabel(panel["xlabel"] or xlabel, **kw.get("xlabel", {}))
             xlim = panel["xlim"] or self.xlim
@@ -835,12 +849,14 @@ class Axes:
         self.spec[self._key("axhlines")].append(line)
         self._plot._send_layout()
 
-    def axvline(self, x=0, ymin=0, ymax=1, **kwargs):
+    def axvline(self, x=None, ymin=0, ymax=1, **kwargs):
         """
         Like `Axes.axvline`: a vertical line at `x` across the panel, dotted grey unless kwargs say
-        otherwise, with a `label` for the legend. To mark the current point of a run:
-        `ax.axvline(plot.step, label="lr drop")`.
+        otherwise, with its `label` written up the side of the line. Unlike matplotlib, whose default
+        is x=0, leaving `x` out marks the current point of the run, which is what a vertical line on
+        a live plot is usually for: `ax.axvline(label="lr drop")`.
         """
+        x = self._plot.step if x is None else x
         line = {**kwargs, "x": float(x), **({"ymin": ymin, "ymax": ymax} if (ymin, ymax) != (0, 1) else {})}
         _try("axvline", **line)
         self.spec["axvlines"].append(line)
@@ -853,11 +869,12 @@ class Axes:
         `legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncols=3)` to put it under the panel.
         A panel with two or more labelled things shows a legend without being asked. The entries come
         from the labels: `ax.plot("loss", label="train")`, `axhline(..., label=...)`, and a label
-        starting with "_" leaves an artist out, as in matplotlib.
+        starting with "_" leaves an artist out, as in matplotlib. (An axvline's label is written beside
+        the line instead.)
         """
         assert not args, (
-            "legend() takes keyword arguments only: the entries come from the labels given to plot(), "
-            "axhline() and axvline() (a label starting with '_' leaves one out)"
+            "legend() takes keyword arguments only: the entries come from the labels given to plot() "
+            "and axhline() (a label starting with '_' leaves one out)"
         )
         _try("legend", [], [], **kwargs)
         self._set("legend", kwargs)
@@ -936,7 +953,7 @@ class LivePlot:
         initial: int | float = 0,
         unit: str = "step",
         unit_scale: int | float = 1,
-        refresh_seconds: float = 0.2,
+        refresh_seconds: float = 0.5,
         max_cols: int | None = 3,
         rows: int | None = None,
         cols: int | None = None,

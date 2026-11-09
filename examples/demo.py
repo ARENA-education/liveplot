@@ -133,7 +133,7 @@ if MAIN:
                 plot.log(step, lr=1e-3 * (400 - step) / 200)
             if step == 200:
                 for ax in plot.axes:                      # a vertical line on every panel, at the current x
-                    ax.axvline(plot.step, label="lr decay starts")
+                    ax.axvline(label="lr decay starts")
                 plot["acc"].axhline(0.9, label="target")  # a horizontal reference line on acc's axis
             slow()
 

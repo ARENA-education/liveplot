@@ -25,7 +25,8 @@ def test_renderer_draws_reference_lines_with_matplotlib_kwargs():
               _normalise_panel("lr")]
     r = _FigureRenderer(panels, xlim=None, layout=LAYOUT)
     ax, ax2 = r.lines["loss"].axes, r.lines["acc"].axes
-    assert [t.get_text() for t in ax.get_legend().get_texts()] == ["loss", "acc", "uniform", "lr drop", "solved"]
+    assert [t.get_text() for t in ax.get_legend().get_texts()] == ["loss", "acc", "uniform", "solved"]
+    assert [t.get_text() for t in ax.texts] == [" lr drop"], "an axvline's label is written by the line, not in the legend"
     ref = ax.get_lines()[1]
     assert ref.get_color() == "red" and ref.get_linestyle() == "-", "kwargs reach the matplotlib artist"
     assert ax2.get_lines()[1].get_linestyle() == "--", "default style when no kwargs given"
@@ -79,3 +80,11 @@ def test_process_mode_reference_lines(monkeypatch):
                 p["loss"].axhline(7.35, label="unigram")
             time.sleep(0.03)
     assert h.frames and all(f[:8] == PNG for f in h.frames) and not p._proc.is_alive()
+
+
+def test_axvline_label_hidden_with_underscore():
+    panels = [_normalise_panel({"metrics": ["loss"], "axvlines": [{"x": 5, "label": "_quiet"}, {"x": 6}]})]
+    r = _FigureRenderer(panels, xlim=None, layout=LAYOUT)
+    ax = r.lines["loss"].axes
+    assert len(ax.texts) == 0 and ax.get_legend() is None, "no label, or a '_' one: just the line"
+    assert sum(line.get_linestyle() == ":" for line in ax.get_lines()) == 2

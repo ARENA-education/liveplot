@@ -106,9 +106,10 @@ def test_set_kwargs_and_reference_lines():
     p.axes[0].axvline(3, label="here", linewidth=2)
     p.log(7, loss=0.5)
     p.axes[0].axvline(p.step, label="now")  # the current point of the run, spelt out
+    p.axes[0].axvline(label="default")      # ... which is also what no x means
     assert spec["axhlines"] == [{"color": "red", "label": "target", "y": 0.1}]
     assert spec["axhlines2"] == [{"y": 0.9}, {"y": 0.5, "xmin": 0.25, "xmax": 0.75}]
-    assert spec["axvlines"] == [{"label": "here", "linewidth": 2, "x": 3.0}, {"label": "now", "x": 7.0}]
+    assert spec["axvlines"] == [{"label": "here", "linewidth": 2, "x": 3.0}, {"label": "now", "x": 7.0}, {"label": "default", "x": 7.0}]
     with pytest.raises(ValueError, match="xmin"):
         p["loss"].axhline(0.1, "target")  # matplotlib's second argument is xmin, not a label
 
@@ -210,7 +211,9 @@ def test_figure_reflects_setters():
     fig = p.snapshot()
     ax, ax2 = fig.axes[0], fig.axes[1]
     assert ax.get_title() == "hello" and ax2.get_ylabel() == "accuracy" and ax2.get_ylim() == (0.0, 1.0)
-    assert "two" in [t.get_text() for t in ax.get_legend().get_texts()], "a labelled axvline is in the legend"
+    assert ax.get_legend() is None or "two" not in [t.get_text() for t in ax.get_legend().get_texts()], \
+        "an axvline's label is written by the line, not put in the legend"
+    assert " two" in [t.get_text() for t in ax.texts], "an axvline's label is written up the side of the line"
 
 
 def test_log_detaches_tensors_that_want_grad():
