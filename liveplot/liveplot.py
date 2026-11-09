@@ -943,10 +943,12 @@ class LivePlot:
         figsize: tuple | None = None,
         cell_size: tuple = (5, 3.5),
         dpi: int = 100,
+        show: bool = True,
         progress: bool = True,
         desc: str | None = None,
         record: bool | str = False,
         smooth: float | None = None,
+        fixed_x: bool = True,
     ):
         """
         LivePlot([iterable,] *panels, total=None, initial=0, unit="step", unit_scale=1, ...)
@@ -959,6 +961,10 @@ class LivePlot:
             docstring). With none, every logged metric shares one panel.
         total, initial, unit, unit_scale: tqdm's arguments, with tqdm's meaning; they define the
             x-axis (see module docstring).
+        fixed_x: with a known total, the x-axis spans the whole run from the start. False lets it grow
+            with the data instead, while the progress bar still shows the total (percentage, ETA).
+        show, progress: show the live plot / the progress bar. Each can be turned off on its own: with
+            show=False nothing is drawn, but metrics are still collected (and shown on the bar).
         """
         iterable, specs = (args[0], args[1:]) if args and not isinstance(args[0], str) else (None, args)
         for spec in specs:
@@ -983,6 +989,7 @@ class LivePlot:
             except TypeError:
                 pass
         self.total, self.initial, self.unit, self.unit_scale = total, initial, unit, unit_scale
+        self.fixed_x = fixed_x
         self.refresh_seconds = refresh_seconds
         self.data: dict[str, tuple[list, list]] = {}  # metric -> (x values, values); full history, this side
         self.latest: dict[str, float] = {}  # most recent value of each metric (what the tqdm postfix shows)
@@ -1001,10 +1008,11 @@ class LivePlot:
         self._proc = self._renderer = self._inbox = self._outbox = None
         self._last_draw = self._last_postfix = 0.0
         self._n_logs = 0
-        self._handle = self._make_display_handle()
+        self._handle = self._make_display_handle() if show else None
         if self._handle is None and not self._record:
-            self.mode = "off"  # not in a notebook: nothing to draw on, just collect metrics
-            _say_nothing_is_drawn()
+            self.mode = "off"  # show=False, or not in a notebook: nothing to draw on, just collect metrics
+            if show:  # show=False asked for this; only say so when it is a surprise
+                _say_nothing_is_drawn()
             return
         try:
             self._start_process()
@@ -1240,8 +1248,8 @@ class LivePlot:
 
     @property
     def x_range(self):
-        """Default x-axis range (initial, initial + total * unit_scale), or None to autoscale."""
-        return (self.initial, self.initial + self.total * self.unit_scale) if self.total else None
+        """Default x-axis range (initial, initial + total * unit_scale), or None to autoscale (no total, or fixed_x=False)."""
+        return (self.initial, self.initial + self.total * self.unit_scale) if self.total and self.fixed_x else None
 
     @property
     def step(self):

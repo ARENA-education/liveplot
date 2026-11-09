@@ -79,8 +79,10 @@ Interrupting the cell is safe. Jupyter sends its interrupt to every process the 
 | | |
 |---|---|
 | `total`, `initial`, `unit`, `unit_scale` | tqdm's arguments, with tqdm's meaning; they define the x-axis (see above) |
+| `fixed_x` | `True` (default): with a known `total`, the x-axis spans the whole run from the start. `False`: it grows with the data, while the progress bar still shows the total |
 | `refresh_seconds` | minimum time between redraws (default 0.2). Points arriving in between are batched into the next frame. `0` redraws whenever new data arrives, as fast as rendering allows (roughly 0.15 s per frame at a few thousand points), and costs nothing while idle. |
 | `max_cols`, `rows`, `cols` | grid shape; `max_cols=None` gives a near-square grid |
+| `show` | `False`: draw nothing (metrics are still collected, and shown on the progress bar) |
 | `progress`, `desc` | disable the bundled tqdm bars, or give the single-loop form's bar a description |
 | `figsize`, `cell_size`, `dpi` | the whole figure's size in inches, as matplotlib means it, however many panels it ends up with; without it, each panel is `cell_size` (default `(5, 3.5)`). `dpi` is the PNG resolution. |
 | `record` | `True` keeps every rendered frame in `plot.frames`; a path such as `"run.gif"` also writes an animated GIF at `finish()`. `plot.save_gif(path, speedup=1.0)` does it on demand. Works outside a notebook too. |
