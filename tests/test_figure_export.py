@@ -2,7 +2,7 @@ from liveplot import LivePlot
 
 
 def test_figure_reflects_current_state(tmp_path):
-    p = LivePlot("loss | acc", {"metrics": ["lr"], "smooth": 0.9}, total=100, unit="examples", unit_scale=10, progress=False)
+    p = LivePlot("loss | acc", {"metrics": ["lr"], "smooth": 0.9}, total=100, unit="examples", unit_scale=10, progress=False, fixed_x=True)
     for step in range(20):
         p.log(step * 10, loss=1.0 / (step + 1), acc=step / 20, lr=1e-3)
     p.axhline(0.2, "target", metric="loss")

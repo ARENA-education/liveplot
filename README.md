@@ -58,7 +58,7 @@ It follows tqdm: the plot counts items consumed and never looks at their values.
 
     x = initial + n * unit_scale
 
-`n` is 0 inside the loop body for the first item, like `for step in range(N)`. `initial` shifts the start (`initial=1` for 1-based, `initial=10` to plot `range(10, 20)` at its values). `unit` and `unit_scale` relabel and rescale it: `unit="examples", unit_scale=batch_size` plots against examples seen, and the tqdm bar shows the same numbers. `total`, in items like tqdm's, fixes the x range; the single-loop form takes it from `len(iterable)`. An explicit `plot.log(step, ...)` uses that x for that call only, like wandb's `step=`.
+`n` is 0 inside the loop body for the first item, like `for step in range(N)`. `initial` shifts the start (`initial=1` for 1-based, `initial=10` to plot `range(10, 20)` at its values). `unit` and `unit_scale` relabel and rescale it: `unit="examples", unit_scale=batch_size` plots against examples seen, and the tqdm bar shows the same numbers. `total`, in items like tqdm's, sets the bar's length (and, with `fixed_x=True`, the x range); the single-loop form takes it from `len(iterable)`. An explicit `plot.log(step, ...)` uses that x for that call only, like wandb's `step=`.
 
 ## Install
 
@@ -79,7 +79,7 @@ Interrupting the cell is safe. Jupyter sends its interrupt to every process the 
 | | |
 |---|---|
 | `total`, `initial`, `unit`, `unit_scale` | tqdm's arguments, with tqdm's meaning; they define the x-axis (see above) |
-| `fixed_x` | `True` (default): with a known `total`, the x-axis spans the whole run from the start. `False`: it grows with the data, while the progress bar still shows the total |
+| `fixed_x` | `False` (default): the x-axis grows with the data, while the progress bar still shows the total. `True`: with a known `total`, the x-axis spans the whole run from the start |
 | `refresh_seconds` | minimum time between redraws (default 1.0). Points arriving in between are batched into the next frame. `0` redraws whenever new data arrives, as fast as rendering allows (roughly 0.15 s per frame at a few thousand points), and costs nothing while idle. |
 | `max_cols`, `rows`, `cols` | grid shape; `max_cols=None` gives a near-square grid |
 | `show` | `False`: draw nothing (metrics are still collected, and shown on the progress bar) |
