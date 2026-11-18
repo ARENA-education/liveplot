@@ -30,8 +30,8 @@ x = initial + n * unit_scale, where n is 0 inside the body for the first item (l
 name; use initial=1 for 1-based, initial=10 to plot range(10, 20) at its values),
 and `unit` / `unit_scale` relabel and rescale it (e.g. unit="examples",
 unit_scale=batch_size plots against examples seen, and the tqdm bar shows the same
-numbers). `total` (in items, like tqdm's) fixes the x range; the single-loop form
-takes it from len(iterable). An explicit `plot.log(step, ...)` uses that x for that
+numbers). `total` (in items, like tqdm's) sets the bar's length, and with
+fixed_x=True the x range; the single-loop form takes it from len(iterable). An explicit `plot.log(step, ...)` uses that x for that
 call only, like wandb's `step=`.
 
 Metrics are discovered from what you log: with no layout given, every metric goes
@@ -826,7 +826,7 @@ class LivePlot:
         desc: str | None = None,
         record: bool | str = False,
         smooth: float | None = None,
-        fixed_x: bool = True,
+        fixed_x: bool = False,
     ):
         """
         LivePlot([iterable,] *panels, total=None, initial=0, unit="step", unit_scale=1, ...)
@@ -839,8 +839,8 @@ class LivePlot:
             module docstring). With none, every logged metric shares one panel.
         total, initial, unit, unit_scale: tqdm's arguments, with tqdm's meaning; they define the
             x-axis (see module docstring).
-        fixed_x: with a known total, the x-axis spans the whole run from the start. False lets it grow
-            with the data instead, while the progress bar still shows the total (percentage, ETA).
+        fixed_x: False (default) lets the x-axis grow with the data, while the progress bar still
+            shows the total (percentage, ETA). True, with a known total, spans the whole run from the start.
         show, progress: show the live plot / the progress bar. Each can be turned off on its own: with
             show=False nothing is drawn, but metrics are still collected (and shown on the bar).
         """

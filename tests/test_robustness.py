@@ -59,13 +59,13 @@ def test_tqdm_kwargs_reach_the_bar_without_colliding():
 
 def test_initial_and_total_reach_the_bar():
     pytest.importorskip("tqdm")
-    p = LivePlot(range(5), initial=100, progress=True)
+    p = LivePlot(range(5), initial=100, progress=True, fixed_x=True)
     for _ in p:
         pass
     assert p.step == 105 and p.x_range == (100, 105)
     assert p._bar.n == 105 and p._bar.total == 105, "the bar counts in the x-axis's numbers"
 
-    q = LivePlot(range(3), initial=256, unit="examples", unit_scale=128, progress=True)
+    q = LivePlot(range(3), initial=256, unit="examples", unit_scale=128, progress=True, fixed_x=True)
     for _ in q:
         pass
     assert q.x_range == (256, 640)

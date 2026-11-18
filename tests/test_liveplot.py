@@ -85,15 +85,15 @@ def test_show_and_progress_switch_off_independently(monkeypatch):
 
 
 def test_x_axis_follows_tqdm_counting():
-    p = LivePlot(range(5, 10), progress=False)  # values are yielded but never used for x
+    p = LivePlot(range(5, 10), progress=False, fixed_x=True)  # values are yielded but never used for x
     seen = [(item, p.step) for item in p]
     assert seen == [(5, 0), (6, 1), (7, 2), (8, 3), (9, 4)] and p._done
     assert p.total == 5 and p.n == 5 and p.x_range == (0, 5)
 
-    q = LivePlot(range(5, 10), initial=5, progress=False)  # tqdm's `initial` shifts the start
+    q = LivePlot(range(5, 10), initial=5, progress=False, fixed_x=True)  # tqdm's `initial` shifts the start
     assert [q.step for _ in q] == [5, 6, 7, 8, 9] and q.x_range == (5, 10)
 
-    r = LivePlot(range(3), unit="examples", unit_scale=128, progress=False)  # x in examples seen
+    r = LivePlot(range(3), unit="examples", unit_scale=128, progress=False, fixed_x=True)  # x in examples seen
     xs = []
     for _ in r:
         r.log(loss=1.0)
@@ -108,16 +108,16 @@ def test_x_axis_follows_tqdm_counting():
     assert s.data["loss"][0] == [0, 1, 2] and s.data["acc"][0] == [1000, 1001, 1002]
 
 
-def test_fixed_x_false_grows_the_axis_but_keeps_the_total():
-    p = LivePlot(range(5), "loss", progress=False, fixed_x=False)
+def test_x_axis_grows_by_default_but_keeps_the_total():
+    p = LivePlot(range(5), "loss", progress=False)
     assert [s for s in p] == [0, 1, 2, 3, 4]
     assert p.total == 5 and p.x_range is None              # the bar still knows the total; the axis autoscales
-    assert LivePlot(range(5), "loss", progress=False).x_range == (0, 5)   # default: spans the whole run
+    assert LivePlot(range(5), "loss", progress=False, fixed_x=True).x_range == (0, 5)   # spans the whole run
 
 
 def test_nested_loops_continue_the_count():
     loader = ["batch"] * 4
-    p = LivePlot("loss", "acc", total=3 * len(loader), progress=False)
+    p = LivePlot("loss", "acc", total=3 * len(loader), progress=False, fixed_x=True)
     for epoch in range(3):
         for _ in p(loader):
             p.log(loss=1.0)
