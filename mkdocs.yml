@@ -1,0 +1,85 @@
+site_name: liveplot
+site_description: Live training curves in Jupyter, Colab and VS Code
+site_url: https://arena-education.github.io/liveplot/
+repo_url: https://github.com/ARENA-education/liveplot
+repo_name: ARENA-education/liveplot
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+nav:
+  - Home: index.md
+  - Common questions: questions.md
+  - Guide:
+      - The x-axis and total: guide/x-axis.md
+      - Panels and layout strings: guide/panels.md
+      - Logging at different rates: guide/logging.md
+      - Customising axes: guide/axes.md
+      - Reference lines: guide/reference-lines.md
+      - Images with subplots and imshow: guide/images.md
+      - Smoothing and log axes: guide/smoothing.md
+      - Saving and recording: guide/saving.md
+      - How it works: guide/how-it-works.md
+  - API reference: api.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.snippets:
+      # index.md includes the overview section of README.md, so that text has one source
+      base_path: ["."]
+      check_paths: true
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: ["."]
+          options:
+            docstring_style: google
+            docstring_options:
+              returns_named_value: false
+              returns_multiple_items: false
+            docstring_section_style: table
+            merge_init_into_class: true
+            members_order: source
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            show_signature_annotations: true
+            separate_signature: true
+            show_source: false
+            heading_level: 2
+
+# Rebuild when the docstrings or the README change, not only the pages
+watch:
+  - liveplot
+  - README.md
