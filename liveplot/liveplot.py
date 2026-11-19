@@ -560,10 +560,25 @@ def _lim(a, b):
 
 
 class _Axis:
-    """
-    One y-axis of a panel (left, or the right-hand `secondary` one), with matplotlib's `Axes` names:
-    set_ylabel / set_ylim / set_yscale / axhline / set(**kwargs). Panel-level setters (title, xlabel,
-    xlim, axvline, smooth) are available here too, as they are on a matplotlib Axes.
+    """One y-axis of a panel: the left one, or the right-hand one.
+
+    You do not create these. `plot["acc"]` returns the axis that holds the metric `acc`, whichever
+    side it is on. `panel.left`, `panel.right` and `panel.twinx()` return a panel's axes directly.
+
+    The y setters (`set_ylabel`, `set_ylim`, `set_yscale`, `axhline`) act on this axis only. The
+    other setters (`set_title`, `set_xlabel`, `set_xlim`, `set_smooth`, `axvline`, `legend`) act on
+    the panel the axis belongs to, because a panel's two y-axes share one title, x-axis and legend.
+
+    Setters can be called before the loop or during it. The figure is laid out again on the next
+    frame.
+
+    Example:
+        ```python
+        plot = LivePlot(loader, "loss | acc")
+        plot["acc"].set_ylim(0, 1)            # the right-hand axis
+        plot["loss"].set_yscale("log")        # the left-hand axis
+        plot["loss"].axhline(0.1, "target")
+        ```
     """
 
     def __init__(self, plot, index: int, right: bool):
@@ -571,10 +586,12 @@ class _Axis:
 
     @property
     def panel(self):
+        """The `Panel` this axis belongs to."""
         return Panel(self._plot, self._index)
 
     @property
     def metrics(self) -> list:
+        """Names of the metrics drawn on this axis, as a new list."""
         return list(self._plot._specs[self._index]["secondary" if self._right else "metrics"])
 
     def _set(self, key, value):
@@ -582,10 +599,28 @@ class _Axis:
         self._plot._send_layout()
 
     def plot(self, *metrics):
-        """
-        Put these metrics on this axis: `ax.plot("lossD", "lossG")`. matplotlib spells the same
-        thing `ax.plot("lossD", data=d)`, naming series in a data source; here the source is the
-        plot itself, filled in later by `log()`. Returns the axis, so calls can be chained.
+        """Put metrics on this axis.
+
+        This names metrics. It takes no data: the values arrive later through `LivePlot.log`.
+        A metric already on this axis is not added twice. If the panel still has its automatic
+        title (the metric names joined by " / "), the title is updated to include the new names.
+
+        Args:
+            *metrics (str): One or more metric names.
+
+        Returns:
+            _Axis: This axis, so calls can be chained.
+
+        Raises:
+            AssertionError: If no name is given, a name is not a string, or the panel is showing
+                an image.
+
+        Example:
+            ```python
+            plot, (ax_loss, ax_img) = LivePlot.subplots(1, 2)
+            ax_loss.plot("lossD", "lossG")       # two curves on the left axis
+            ax_loss.twinx().plot("D(x)")         # one curve on the right axis
+            ```
         """
         assert metrics, "plot() needs at least one metric name"
         assert all(isinstance(m, str) for m in metrics), \
@@ -602,50 +637,124 @@ class _Axis:
         return self
 
     def set_ylabel(self, ylabel):
+        """Set this axis's y label.
+
+        Without one, a panel with two y-axes labels each with its metric names, and a panel with
+        one y-axis has no y label.
+
+        Args:
+            ylabel (str): The label text.
+        """
         self._set("ylabel", str(ylabel))
 
     def set_ylim(self, bottom=None, top=None):
+        """Fix this axis's y range. Without it the range follows the data.
+
+        Args:
+            bottom (float | tuple[float, float]): The lower limit, or a `(bottom, top)` pair.
+            top (float): The upper limit. Both limits are required: `set_ylim(0)` raises.
+
+        Example:
+            ```python
+            plot["acc"].set_ylim(0, 1)
+            plot["acc"].set_ylim((0, 1))   # the same
+            ```
+        """
         self._set("ylim", _lim(bottom, top))
 
     def set_yscale(self, value):
+        """Set this axis's y scale.
+
+        Args:
+            value (str): `"linear"` or `"log"`. Anything else raises `AssertionError`.
+        """
         assert value in ("linear", "log"), f"yscale must be 'linear' or 'log', got {value!r}"
         self._set("yscale", value)
 
     def axhline(self, y, label=None, **kwargs):
-        """Like `Axes.axhline`: a horizontal reference line on this axis, with `label` in the legend."""
+        """Draw a horizontal reference line on this axis.
+
+        The line is dashed grey by default and always gets an entry in the panel's legend.
+
+        Args:
+            y (float): Where to draw the line, in this axis's units.
+            label (str | None): The legend text. Defaults to the value of `y`.
+            **kwargs (Any): Passed to matplotlib's `Axes.axhline` (`color`, `linestyle`, `linewidth`,
+                `alpha`, ...).
+
+        Example:
+            ```python
+            plot["loss"].axhline(math.log(d_vocab), "uniform", color="red")
+            ```
+        """
         line = {**kwargs, "y": float(y), "label": str(label) if label is not None else f"{float(y):g}"}
         self._plot._specs[self._index]["axhlines2" if self._right else "axhlines"].append(line)
         self._plot._send_layout()
 
     def set(self, **kwargs):
-        """Like `Axes.set`: `ax.set(ylabel="loss", ylim=(0, 1), yscale="log", title=...)`."""
+        """Call several setters at once, like matplotlib's `Axes.set`.
+
+        Each keyword `name=value` calls `set_name(value)`.
+
+        Args:
+            **kwargs (Any): Any of `ylabel`, `ylim`, `yscale` (this axis) and `title`, `xlabel`, `xlim`,
+                `smooth` (the panel). Limits are `(low, high)` pairs. An unknown name raises
+                `AttributeError`.
+
+        Example:
+            ```python
+            plot["acc"].set(ylabel="test accuracy", ylim=(0, 1), title="evaluation")
+            ```
+        """
         for key, value in kwargs.items():
             getattr(self, f"set_{key}")(value)
 
     # panel-level setters, so plot["acc"].set_title(...) works as it would on a matplotlib Axes
     def set_title(self, label):
+        """Set the title of this axis's panel. Same as `Panel.set_title`."""
         self.panel.set_title(label)
 
     def legend(self, **kwargs):
+        """Move or restyle the legend of this axis's panel. Same as `Panel.legend`."""
         self.panel.legend(**kwargs)
 
     def set_xlabel(self, xlabel):
+        """Set the x label of this axis's panel. Same as `Panel.set_xlabel`."""
         self.panel.set_xlabel(xlabel)
 
     def set_xlim(self, left=None, right=None):
+        """Fix the x range of this axis's panel. Same as `Panel.set_xlim`."""
         self.panel.set_xlim(left, right)
 
     def axvline(self, x=None, label=None, **kwargs):
+        """Draw a vertical line on this axis's panel. Same as `Panel.axvline`."""
         self.panel.axvline(x, label, **kwargs)
 
     def set_smooth(self, weight):
+        """Set the smoothing weight of this axis's panel. Same as `Panel.set_smooth`."""
         self.panel.set_smooth(weight)
 
 
 class Panel:
-    """
-    One panel of the grid: `plot.panels[i]`, or `plot[metric].panel`. `.left` / `.right` are its y-axes
-    (`.right` exists only if the panel has secondary metrics). y-setters here act on the left axis.
+    """One panel of the grid: a set of curves with one or two y-axes, or one image.
+
+    You do not create these. Get one from `plot.panels[i]`, from `plot[metric].panel`, or from
+    `LivePlot.subplots`, which returns the panels of a fixed grid.
+
+    A panel has a title, an x-axis, a legend and a smoothing weight, and up to two y-axes:
+    `panel.left` and `panel.right`. The y setters on the panel itself (`set_ylabel`, `set_ylim`,
+    `set_yscale`, `axhline`) act on the left axis.
+
+    Setters can be called before the loop or during it. The figure is laid out again on the next
+    frame.
+
+    Example:
+        ```python
+        plot = LivePlot(loader, "loss | acc", "lr")
+        plot.panels[0].set_title("training")
+        plot.panels[0].right.set_ylim(0, 1)   # the axis holding acc
+        plot.panels[1].set_yscale("log")      # the lr panel
+        ```
     """
 
     def __init__(self, plot, index: int):
@@ -653,47 +762,113 @@ class Panel:
 
     @property
     def spec(self) -> dict:
+        """The panel's settings as a dict (title, metrics, limits, ...). Mostly for debugging."""
         return self._plot._specs[self._index]
 
     @property
     def metrics(self) -> list:
+        """Names of the metrics on this panel: the left axis's first, then the right axis's."""
         return list(self.spec["metrics"]) + list(self.spec["secondary"])
 
     @property
     def left(self) -> _Axis:
+        """The left y-axis."""
         return _Axis(self._plot, self._index, right=False)
 
     @property
     def right(self) -> _Axis:
+        """The right-hand y-axis.
+
+        Raises `AssertionError` if the panel has no metrics on a right-hand axis. Use `twinx()`
+        to get the right-hand axis of a panel that has none yet.
+        """
         assert self.spec["secondary"], "this panel has no right-hand axis (no metrics after '|')"
         return _Axis(self._plot, self._index, right=True)
 
     def twinx(self) -> _Axis:
-        """Like `Axes.twinx`: this panel's right-hand y-axis, whether or not it holds anything yet."""
+        """Return this panel's right-hand y-axis, like matplotlib's `Axes.twinx`.
+
+        Unlike `right`, this works on a panel with nothing on its right-hand axis yet. The axis
+        appears in the figure once a metric is put on it.
+
+        Returns:
+            The right-hand axis.
+
+        Example:
+            ```python
+            plot, ax = LivePlot.subplots()
+            ax.plot("loss")
+            ax.twinx().plot("acc")   # acc on the right-hand axis
+            ```
+        """
         return _Axis(self._plot, self._index, right=True)
 
     def plot(self, *metrics) -> _Axis:
-        """Like `ax.plot("name", data=...)`: put these metrics on the left axis. See `_Axis.plot`."""
+        """Put metrics on this panel's left axis.
+
+        This names metrics. It takes no data: the values arrive later through `LivePlot.log`.
+
+        Args:
+            *metrics (str): One or more metric names.
+
+        Returns:
+            The left axis.
+
+        Example:
+            ```python
+            plot, (ax_loss, ax_acc) = LivePlot.subplots(1, 2)
+            ax_loss.plot("train_loss", "val_loss")   # two curves on one axis
+            ax_acc.plot("acc")
+            ```
+        """
         return self.left.plot(*metrics)
 
     def imshow(self, x, *, rows=None, cols=None, griddim=None, vmin=None, vmax=None, scale_each=False,
                channels=None, cmap="gray", padding=0, pad_value=0, max_images=64, max_cols=8):
-        """
-        Like `Axes.imshow`, but for a whole batch and repeatable: show `x` on this panel, replacing
-        whatever was there. A batch is tiled into a grid -- `rows` or `cols` alone infers the other,
-        `griddim=(rows, cols)` fixes both (padding with blanks, or dropping the tail). With neither,
-        the grid is near-square (3 -> 2x2, 5 -> 3x2, 8 -> 3x3, 64 -> 8x8), at most `max_cols` wide.
-        Only the first `max_images` are shown, with a warning (`max_images=None` for all of them).
-        Images sit edge to edge; `padding` puts that many pixels of `pad_value` between them. The
-        title shows the step the image was drawn at.
+        """Show an image, or a batch of images as a grid, on this panel.
 
-        Accepts (H, W), (C, H, W), (H, W, C), (B, H, W), (B, C, H, W) and (B, H, W, C); (3, H, W)
-        and (4, H, W) are ambiguous and raise, telling you which `channels=` to pass.
+        Each call replaces the previous picture. Once the plot has a step (a loop is wrapped or
+        something has been logged), the panel's title shows the step the picture was drawn at.
 
-        Values are scaled to the full range by default, over the whole batch; `vmin` / `vmax` fix
-        the range instead (worth doing for a live view -- otherwise the black point moves every
-        frame), and `scale_each=True` scales each image on its own, as make_grid does. Unlike
-        matplotlib, `vmin` / `vmax` are honoured for colour images too.
+        Accepted shapes: `(H, W)`, `(1, H, W)`, `(H, W, 3|4)`, `(B, H, W)`, `(B, 1|3|4, H, W)` and
+        `(B, H, W, 1|3|4)`. `(3, H, W)` and `(4, H, W)` are ambiguous and raise `ValueError`;
+        pass `channels`. A 3-d array whose last dimension is 3 or 4 is read as one colour image.
+
+        Args:
+            x (ArrayLike): A torch tensor, numpy array, or anything `numpy.asarray` accepts. Tensors are
+                detached and moved to the CPU for you.
+            rows (int | None): Number of grid rows. The number of columns is inferred.
+            cols (int | None): Number of grid columns. The number of rows is inferred.
+            griddim (tuple[int, int] | None): `(rows, cols)`, fixing both. Missing cells are left blank and extra images
+                are dropped. Do not combine with `rows` or `cols`.
+            vmin (float | None): Value at the dark end of the range. Defaults to the minimum of the batch.
+            vmax (float | None): Value at the bright end of the range. Defaults to the maximum of the batch. Fixing `vmin` and
+                `vmax` stops the brightness changing from frame to frame. They apply to colour
+                images too. `uint8` input is shown as it is unless one of them is given.
+            scale_each (bool): Scale each image to its own range instead of the batch's.
+            channels (str | None): How to read a 3-d input: `"first"` for `(C, H, W)`, `"last"` for
+                `(H, W, C)`, `"none"` for a batch of grayscale `(B, H, W)`.
+            cmap (str): Matplotlib colormap for grayscale images.
+            padding (int): Pixels of `pad_value` around every image in a grid. 0 puts them edge to edge.
+            pad_value (int): The value (0 to 255) of padding pixels and blank cells.
+            max_images (int | None): Show only this many images from the batch, with a warning. `None` shows
+                all of them.
+            max_cols (int | None): Widest grid to choose when neither `rows`, `cols` nor `griddim` is given.
+                The default grid is near-square: 3 images give 2x2, 8 give 3x3, 64 give 8x8.
+
+        Returns:
+            Panel: This panel.
+
+        Raises:
+            AssertionError: If the panel already holds curves.
+            ValueError: If the shape is ambiguous or not 2-, 3- or 4-dimensional.
+
+        Example:
+            ```python
+            plot, (ax_loss, ax_samples) = LivePlot.subplots(1, 2)
+            ax_loss.plot("lossD", "lossG")
+            ax_samples.imshow(netG(fixed_noise), rows=2, vmin=-1, vmax=1)
+            ```
         """
         from ._images import to_grid
 
@@ -715,48 +890,119 @@ class Panel:
         self._plot._send_layout()
 
     def set_title(self, label):
+        """Set the panel's title.
+
+        Without one, the title is the panel's metric names joined by " / ".
+
+        Args:
+            label (str): The title text.
+        """
         self._set("title", str(label))
 
     def legend(self, **kwargs):
-        """
-        Like `Axes.legend`, for the panel's one legend (both y-axes' curves and its reference lines):
-        kwargs go to matplotlib, e.g. `legend(loc="upper left", ncols=3)`, or
-        `legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncols=3)` to put it under the panel.
+        """Move or restyle the panel's legend.
+
+        A panel has one legend. It lists the curves of both y-axes and the horizontal reference
+        lines. Each call replaces the settings of the previous call.
+
+        Args:
+            **kwargs (Any): Passed to matplotlib's `Axes.legend` (`loc`, `ncols`, `bbox_to_anchor`,
+                `fontsize`, ...). The defaults are `loc="best"` and `fontsize=8`.
+
+        Example:
+            ```python
+            # under the panel, in three columns
+            ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncols=3)
+            ```
         """
         self._set("legend", kwargs)
 
     def set_xlabel(self, xlabel):
+        """Set the panel's x label. Without one, the label is the plot's `unit` ("step" by default).
+
+        Args:
+            xlabel (str): The label text.
+        """
         self._set("xlabel", str(xlabel))
 
     def set_xlim(self, left=None, right=None):
+        """Fix the panel's x range.
+
+        This overrides the range that `fixed_x=True` gives the plot. Without either, the x range
+        follows the data.
+
+        Args:
+            left (float | tuple[float, float]): The lower limit, or a `(left, right)` pair.
+            right (float): The upper limit. Both limits are required.
+        """
         self._set("xlim", _lim(left, right))
 
     def set_smooth(self, weight):
-        """wandb-style smoothing weight in [0, 1) for every curve on this panel; 0 turns it off."""
+        """Smooth every curve on this panel.
+
+        The curve drawn is wandb's time-weighted exponential moving average. The raw values stay
+        visible as a faded line behind it. `plot.data` always holds the raw values.
+
+        Args:
+            weight (float): The smoothing weight, from 0 up to but not including 1. Larger is smoother.
+                0 turns smoothing off.
+        """
         self._set("smooth", _check_smooth(weight))
 
     def axvline(self, x=None, label=None, **kwargs):
-        """Like `Axes.axvline`, on this panel only: a vertical line at `x` (default: the current step)."""
+        """Draw a vertical line on this panel only.
+
+        The line is dotted grey by default.
+
+        Args:
+            x (float | None): Where to draw the line. Defaults to the plot's current step (`plot.step`) at the
+                time of the call.
+            label (str | None): Text written along the line. It does not go in the legend.
+            **kwargs (Any): Passed to matplotlib's `Axes.axvline` (`color`, `linestyle`, ...).
+
+        Example:
+            ```python
+            plot.panels[0].axvline(label="lr drop")         # at the current step
+            plot.panels[1].axvline(2000, "checkpoint")      # at x = 2000
+            ```
+        """
         line = {**kwargs, "x": float(self._plot.step if x is None else x), "label": label}
         self.spec["axvlines"].append(line)
         self._plot._send_layout()
 
     def set(self, **kwargs):
-        """Like `Axes.set`: `panel.set(title="training", xlabel="examples", ylim=(0, 1))`."""
+        """Call several setters at once, like matplotlib's `Axes.set`.
+
+        Each keyword `name=value` calls `set_name(value)`.
+
+        Args:
+            **kwargs (Any): Any of `title`, `xlabel`, `xlim`, `smooth`, `ylabel`, `ylim`, `yscale`.
+                Limits are `(low, high)` pairs. The y settings go to the left axis. An unknown
+                name raises `AttributeError`.
+
+        Example:
+            ```python
+            plot.panels[0].set(title="training", xlabel="examples", ylim=(0, 1))
+            ```
+        """
         for key, value in kwargs.items():
             getattr(self, f"set_{key}")(value)
 
     # y-setters act on the left axis, as on a matplotlib Axes
     def set_ylabel(self, ylabel):
+        """Set the left axis's y label. Same as `panel.left.set_ylabel(ylabel)`."""
         self.left.set_ylabel(ylabel)
 
     def set_ylim(self, bottom=None, top=None):
+        """Fix the left axis's y range. Same as `panel.left.set_ylim(bottom, top)`."""
         self.left.set_ylim(bottom, top)
 
     def set_yscale(self, value):
+        """Set the left axis's y scale, `"linear"` or `"log"`. Same as `panel.left.set_yscale(value)`."""
         self.left.set_yscale(value)
 
     def axhline(self, y, label=None, **kwargs):
+        """Draw a horizontal reference line on the left axis. Same as `panel.left.axhline(...)`."""
         self.left.axhline(y, label, **kwargs)
 
     def __repr__(self):
@@ -764,9 +1010,17 @@ class Panel:
 
 
 class _PanelGrid:
-    """
-    The panel array `LivePlot.subplots` returns, indexable the way matplotlib's is: `axes[0][1]`
-    and `axes[0, 1]` both work, `axes.flat` walks it in row-major order, and it unpacks.
+    """The 2-d grid of panels that `LivePlot.subplots` returns for two or more rows and columns.
+
+    It is indexed like matplotlib's array of axes: `axes[0][1]` and `axes[0, 1]` are the same
+    panel. Iterating it yields rows, each a list of panels, so it unpacks like a nested list.
+
+    Example:
+        ```python
+        plot, axes = LivePlot.subplots(2, 2)
+        axes[0, 0].plot("loss")
+        (ax_a, ax_b), (ax_c, ax_d) = axes
+        ```
     """
 
     def __init__(self, rows: list):
@@ -786,10 +1040,12 @@ class _PanelGrid:
 
     @property
     def flat(self) -> list:
+        """Every panel as one list, row by row."""
         return [panel for row in self._rows for panel in row]
 
     @property
     def shape(self) -> tuple:
+        """`(rows, columns)`."""
         return (len(self._rows), len(self._rows[0]))
 
     def _squeezed(self):
@@ -808,6 +1064,58 @@ class _PanelGrid:
 
 
 class LivePlot:
+    """A live plot of the metrics you log, with a tqdm progress bar underneath.
+
+    Metrics are named when you log them: `plot.log(loss=0.3)`. Each name becomes a curve, and the
+    figure redraws in the notebook's output cell while the loop runs.
+
+    The x value of a point is the plot's step counter at the time of the `log` call. `log` itself
+    does not advance the counter. Advance it in one of three ways:
+
+    1. Iterate the plot: `for batch in LivePlot(loader)`. Each item advances the counter by one.
+    2. Wrap an inner loop with `plot(loader)`, or call `plot.update()` once per step. Use these
+       for nested epoch and batch loops.
+    3. Pass the x value yourself: `plot.log(step, loss=0.3)`.
+
+    If you do none of these, every point is logged at the same x (`initial`, 0 by default) and
+    the curve collapses to a vertical line.
+
+    Outside a notebook nothing is drawn, but `data` still collects everything.
+
+    Example:
+        ```python
+        from liveplot import LivePlot
+
+        plot = LivePlot(loader, "loss | acc", "lr")   # two panels; acc on a right-hand axis
+        plot["acc"].set_ylim(0, 1)
+        for batch in plot:                            # wrapping the loader advances x
+            loss, acc = train_step(batch)
+            plot.log(loss=loss, acc=acc, lr=get_lr())
+        ```
+
+    Attributes:
+        data (dict[str, tuple[list, list]]): The full history, `{metric: (xs, values)}`. It is
+            filled in whether or not anything is drawn.
+        latest (dict[str, float]): The most recent value of each metric. The progress bar shows
+            these.
+        n (int): Items consumed so far, across every wrapped loop and `update()` call. Same
+            meaning as tqdm's `n`.
+        total (int | None): The `total` argument, or `len(iterable)` if that was not given.
+        initial (int | float): The `initial` argument.
+        unit (str): The `unit` argument.
+        unit_scale (int | float): The `unit_scale` argument.
+        fixed_x (bool): The `fixed_x` argument.
+        refresh_seconds (float): The `refresh_seconds` argument.
+        smooth (float | None): The default smoothing weight for panels.
+        mode (str): `"process"` when a separate render process draws the figure, `"thread"` when
+            that process could not start or died, and drawing happens inside `log`, `"off"` when nothing
+            is drawn (`show=False`, or not in a notebook, and not recording).
+        frames (list[tuple[float, bytes]]): With `record` set, every frame shown so far, as
+            `(seconds since the plot was created, PNG bytes)`.
+        last_png (bytes | None): The most recent frame, as PNG bytes.
+        axvlines (list[dict]): The plot-wide vertical lines added with `axvline`.
+    """
+
     def __init__(
         self,
         *args,
@@ -828,21 +1136,55 @@ class LivePlot:
         smooth: float | None = None,
         fixed_x: bool = False,
     ):
-        """
-        LivePlot([iterable,] *panels, total=None, initial=0, unit="step", unit_scale=1, ...)
+        """Create a plot: `LivePlot([iterable,] *panels, **options)`.
 
-        iterable: anything to loop over (a range, a DataLoader, an existing tqdm bar). Iterating
-            the LivePlot yields its items, shows a tqdm bar (unless progress=False or it already is
-            one) and finishes the plot when the loop ends, however it ends. For nested loops, leave
-            it out and wrap the inner loop with `plot(iterable, **tqdm_kwargs)` instead.
-        panels: layout strings like "loss", "return | entropy", "lossD lossG | acc", or dicts (see
-            module docstring). With none, every logged metric shares one panel.
-        total, initial, unit, unit_scale: tqdm's arguments, with tqdm's meaning; they define the
-            x-axis (see module docstring).
-        fixed_x: False (default) lets the x-axis grow with the data, while the progress bar still
-            shows the total (percentage, ETA). True, with a known total, spans the whole run from the start.
-        show, progress: show the live plot / the progress bar. Each can be turned off on its own: with
-            show=False nothing is drawn, but metrics are still collected (and shown on the bar).
+        Args:
+            *args (Any): An optional iterable, then any number of panel layouts.
+
+                The iterable is anything you would loop over: a `range`, a `DataLoader`, an
+                existing tqdm bar. If the first argument is not a string or a dict, it is taken
+                as the iterable. Iterating the plot then yields its items, advances x by one per
+                item, shows a progress bar, and calls `finish()` when the loop ends. An existing
+                tqdm bar is reused, not wrapped in a second one. Leave the iterable out for
+                nested loops and use `plot(inner_iterable)` or `plot.update()`.
+
+                Each layout string is one panel. Names separated by spaces share the left
+                y-axis. Names after a `|` go on a right-hand y-axis: `"loss"`, `"train_loss
+                val_loss"`, `"loss | acc"`. With no layout, every metric you log shares one
+                panel. With a layout, a metric that no string mentions gets a panel of its own.
+                A dict such as `{"metrics": ["acc"], "ylim": (0, 1)}` is also accepted in place
+                of a string, but the setters are the intended way to configure a panel.
+            total: Number of items in the whole run. Optional. Defaults to `len(iterable)` when
+                there is an iterable with a length. It does two things. It is the length of the
+                progress bar when the bar cannot get one from the iterable: the bar that
+                `update()` opens, and the bar for an iterable that has no `len()`. And with
+                `fixed_x=True` it fixes the x range. With the default `fixed_x=False` it does
+                not change the figure. Bars made by `plot(iterable)` use `len(iterable)`.
+            initial: The x value of the first item. Use `initial=1` for a 1-based x-axis.
+            unit: Name of one item. It is the default x label and the unit on the progress bar.
+            unit_scale: How much x advances per item. `x = initial + n * unit_scale`. For
+                example `unit="examples", unit_scale=batch_size` plots against examples seen.
+            refresh_seconds: Minimum time between redraws. Points that arrive in between are
+                drawn together in the next frame. 0 redraws whenever new data arrives.
+            max_cols: Widest grid of panels. `None` gives a near-square grid.
+            rows: Fix the number of grid rows.
+            cols: Fix the number of grid columns.
+            cell_size: `(width, height)` of one panel, in inches.
+            dpi: Resolution of the rendered image.
+            show: `False` draws nothing. Metrics are still collected in `data` and shown on the
+                progress bar.
+            progress: `False` shows no progress bar.
+            desc: Text before the progress bar, for the bar made by iterating the plot or by
+                `update()`. Bars made by `plot(iterable, desc=...)` take their own.
+            record: `True` keeps every rendered frame in `frames`. A path such as `"run.gif"`
+                also writes an animated GIF there at `finish()`. Recording works outside a
+                notebook too.
+            smooth: Default smoothing weight for every panel, from 0 up to but not including 1.
+                See `set_smooth`.
+            fixed_x: `False` (the default) lets the x-axis grow with the data. `True`, with a
+                known `total`, fixes the x-axis to `(initial, initial + total * unit_scale)` from
+                the first frame, so the curve grows into an axis that already spans the run.
+                It has no effect without a `total`.
         """
         iterable, specs = (args[0], args[1:]) if args and not isinstance(args[0], (str, dict)) else (None, args)
         self.smooth = _check_smooth(smooth)  # default TWEMA weight for panels that don't set their own (wandb's smoothing slider)
@@ -918,19 +1260,38 @@ class LivePlot:
     @classmethod
     def subplots(cls, nrows: int = 1, ncols: int = 1, *, figsize=None, squeeze: bool = True,
                  width_ratios=None, height_ratios=None, iterable=None, **kwargs):
-        """
-        Like `plt.subplots`, for a live plot: returns `(plot, axes)` with a fixed nrows x ncols grid
-        of empty panels, which you then fill with `ax.plot("loss", ...)` or `ax.imshow(tensor)`.
+        """Create a plot with a fixed grid of empty panels, like `plt.subplots`.
 
-            plot, (ax_loss, ax_samples) = LivePlot.subplots(1, 2, total=n_steps, figsize=(11, 4))
-            ax_loss.plot("lossD", "lossG")
-            ax_samples.imshow(netG(fixed_noise), rows=2, vmin=-1, vmax=1)
+        Fill each panel with `ax.plot("loss", ...)` for curves or `ax.imshow(tensor)` for an
+        image. The grid never grows: a metric you log without placing it joins the first panel
+        that is still empty, or the first curve panel if none is empty.
 
-        `axes` follows matplotlib's squeeze rules: one panel for 1x1, a flat list for a single row
-        or column, a 2-d grid otherwise. `figsize` is the whole figure in inches, as matplotlib
-        means it (liveplot's own `cell_size` is per panel). `width_ratios` / `height_ratios` are
-        matplotlib's too, e.g. `width_ratios=(1, 1.3)` to give an image panel more room. Every other
-        keyword goes to `LivePlot`.
+        Args:
+            nrows: Number of grid rows.
+            ncols: Number of grid columns.
+            figsize (tuple[float, float] | None): `(width, height)` of the whole figure in inches. Without it, each panel
+                is `cell_size` inches.
+            squeeze: `True` returns one `Panel` for a 1x1 grid, a flat list for a single row or
+                column, and a 2-d grid otherwise. `False` always returns the 2-d grid.
+            width_ratios (Sequence[float] | None): Relative column widths, one per column, e.g. `(1, 1.3)`.
+            height_ratios (Sequence[float] | None): Relative row heights, one per row.
+            iterable (Iterable | None): An iterable to wrap, as in `LivePlot(iterable)`.
+            **kwargs (Any): Any other `LivePlot` option, such as `total` or `smooth`.
+
+        Returns:
+            tuple[LivePlot, Panel | list[Panel] | _PanelGrid]: `(plot, axes)`, the plot and its panels.
+
+        Example:
+            ```python
+            plot, (ax_loss, ax_samples) = LivePlot.subplots(1, 2, figsize=(11, 4))
+            ax_loss.plot("lossD", "lossG")           # two metrics on the left axis
+            ax_loss.twinx().plot("D_real")           # one on the right-hand axis
+            for batch in plot(loader):
+                plot.log(lossD=..., lossG=..., D_real=...)
+                if plot.n % 250 == 0:
+                    ax_samples.imshow(netG(fixed_noise), rows=2, vmin=-1, vmax=1)
+            plot.finish()
+            ```
         """
         assert nrows >= 1 and ncols >= 1, f"need at least a 1x1 grid, got {nrows}x{ncols}"
         kwargs.setdefault("rows", nrows)
@@ -956,14 +1317,34 @@ class LivePlot:
 
     @property
     def panels(self) -> list:
-        """The panels of the grid, in order: `plot.panels[0].set_title("training")`."""
+        """The panels of the grid, in order, as a list of `Panel`.
+
+        Example:
+            ```python
+            plot.panels[0].set_title("training")
+            ```
+        """
         return [Panel(self, i) for i in range(len(self._specs))]
 
     def __getitem__(self, metric: str) -> _Axis:
-        """
-        The y-axis that holds `metric`: `plot["acc"].set_ylim(0, 1)`. Right-hand axes are found too,
-        which is what makes the left/right distinction disappear from the API. A metric that hasn't
-        been logged yet gets its panel created now.
+        """Return the y-axis that holds a metric: `plot["acc"]`.
+
+        This finds the axis whichever side it is on, so the same spelling configures a left or a
+        right-hand axis. A metric that no panel holds yet is placed now, as `log` would place it.
+
+        Args:
+            metric: A metric name.
+
+        Returns:
+            The axis object. Its setters are `set_ylim`, `set_ylabel`, `set_yscale`, `axhline`
+            and `set`, plus the panel's setters.
+
+        Example:
+            ```python
+            plot = LivePlot(loader, "loss | acc")
+            plot["acc"].set_ylim(0, 1)
+            plot["loss"].axhline(0.1, "target")
+            ```
         """
         if metric not in self._placed:
             self.data.setdefault(metric, ([], []))
@@ -983,31 +1364,87 @@ class LivePlot:
         self._send_layout()
 
     def set_title(self, label):
+        """Give every panel the same title, including panels created later.
+
+        To title one panel, use `plot.panels[i].set_title(...)` or `plot[metric].set_title(...)`.
+
+        Args:
+            label (str): The title text.
+        """
         self._set_all("title", str(label))
 
     def set_xlabel(self, xlabel):
+        """Set the x label of every panel, including panels created later.
+
+        Args:
+            xlabel (str): The label text.
+        """
         self._set_all("xlabel", str(xlabel))
 
     def set_xlim(self, left=None, right=None):
+        """Fix the x range of every panel, including panels created later.
+
+        Args:
+            left (float | tuple[float, float]): The lower limit, or a `(left, right)` pair.
+            right (float): The upper limit. Both limits are required.
+        """
         self._set_all("xlim", _lim(left, right))
 
     def set_ylabel(self, ylabel):
+        """Set the left y label of every panel, including panels created later.
+
+        Args:
+            ylabel (str): The label text.
+        """
         self._set_all("ylabel", str(ylabel))
 
     def set_ylim(self, bottom=None, top=None):
+        """Fix the left y range of every panel, including panels created later.
+
+        Right-hand axes are not changed. Use `plot[metric].set_ylim(...)` for those.
+
+        Args:
+            bottom (float | tuple[float, float]): The lower limit, or a `(bottom, top)` pair.
+            top (float): The upper limit. Both limits are required.
+        """
         self._set_all("ylim", _lim(bottom, top))
 
     def set_yscale(self, value):
+        """Set the left y scale of every panel, including panels created later.
+
+        Args:
+            value (str): `"linear"` or `"log"`.
+        """
         assert value in ("linear", "log"), f"yscale must be 'linear' or 'log', got {value!r}"
         self._set_all("yscale", value)
 
     def set_smooth(self, weight):
-        """wandb-style smoothing weight in [0, 1) for every panel (and the default for later ones)."""
+        """Smooth the curves of every panel, including panels created later.
+
+        The curve drawn is wandb's time-weighted exponential moving average, with the raw values
+        as a faded line behind it. `data` always holds the raw values.
+
+        Args:
+            weight (float): The smoothing weight, from 0 up to but not including 1. Larger is smoother.
+                0 turns smoothing off.
+        """
         self.smooth = _check_smooth(weight)
         self._set_all("smooth", weight)
 
     def set(self, **kwargs):
-        """Like `Axes.set`, on every panel: `plot.set(xlabel="examples", yscale="log")`."""
+        """Call several plot-level setters at once, like matplotlib's `Axes.set`.
+
+        Each keyword `name=value` calls `set_name(value)`, so it applies to every panel.
+
+        Args:
+            **kwargs (Any): Any of `title`, `xlabel`, `xlim`, `ylabel`, `ylim`, `yscale`, `smooth`.
+                Limits are `(low, high)` pairs. An unknown name raises `AttributeError`.
+
+        Example:
+            ```python
+            plot.set(xlabel="examples", yscale="log", smooth=0.9)
+            ```
+        """
         for key, value in kwargs.items():
             getattr(self, f"set_{key}")(value)
 
@@ -1089,19 +1526,48 @@ class LivePlot:
 
     @property
     def x_range(self):
-        """Default x-axis range (initial, initial + total * unit_scale), or None to autoscale (no total, or fixed_x=False)."""
+        """The fixed x-axis range, or `None` when the x-axis follows the data.
+
+        It is `(initial, initial + total * unit_scale)` when `fixed_x=True` and `total` is known,
+        and `None` otherwise.
+        """
         return (self.initial, self.initial + self.total * self.unit_scale) if self.total and self.fixed_x else None
 
     @property
     def step(self):
-        """The x value a `log()` call gets right now."""
+        """The x value that a `log()` call without an explicit step gets right now.
+
+        Once a loop is wrapped or `update()` has been called, this is
+        `initial + n * unit_scale`. Before that, it is the step of the last `log(step, ...)`
+        call, or `initial` if there has been none.
+        """
         return self.initial + self.n * self.unit_scale if self._wrapping else self._last_x
 
     def __call__(self, iterable, **tqdm_kwargs):
-        """
-        Wrap a loop: `for batch in plot(loader, desc="epoch 3"):`. Shows a tqdm bar (kwargs go to
-        tqdm) and advances the item count that drives the x-axis. Wrap as many loops as you like
-        on one plot; the count continues across them. Does not finish the plot when the loop ends.
+        """Wrap a loop so that each item advances the x-axis by one step: `plot(loader)`.
+
+        Use this for nested loops. Create the plot once, then wrap the inner loop on every epoch.
+        The step count continues from one wrapped loop to the next, and each gets its own
+        progress bar of length `len(iterable)`. The count is 0 inside the body for the first
+        item, like `for step in range(n)`. The plot is not finished when the loop ends, so call
+        `finish()` yourself or use `with`.
+
+        Args:
+            iterable (Iterable): What to loop over. An existing tqdm bar is reused.
+            **tqdm_kwargs (Any): Passed to tqdm, e.g. `desc="epoch 3"`.
+
+        Yields:
+            Any: The items of `iterable`.
+
+        Example:
+            ```python
+            plot = LivePlot("loss", "acc")
+            for epoch in range(epochs):
+                for batch in plot(loader, desc=f"epoch {epoch}"):
+                    plot.log(loss=train_step(batch))     # one point per batch
+                plot.log(acc=evaluate())                 # one point per epoch
+            plot.finish()
+            ```
         """
         self._wrapping = True
         bar = self._make_bar(iterable, tqdm_kwargs)
@@ -1120,17 +1586,25 @@ class LivePlot:
                     bar.close()
 
     def update(self, n=1):
-        """
-        Like tqdm's `update`, for a loop you drive yourself: advance the count, and so the x-axis, by
-        `n` items. The first call opens a bar of `total` items below the plot, as `tqdm(total=...)`
-        would, and `finish()` closes it. One bar for a whole multi-epoch run:
+        """Advance the x-axis by hand, like tqdm's `update`.
 
-            plot = LivePlot(total=epochs * len(loader))
+        Use this when you do not want to wrap the loop. Call it once per step, after logging
+        that step's metrics. The first call opens one progress bar for the whole run, of length
+        `total` if you gave one, and `finish()` closes it.
+
+        Args:
+            n (int): How many items to advance by.
+
+        Example:
+            ```python
+            plot = LivePlot(total=epochs * len(loader))   # total only sets the bar's length
             for epoch in range(epochs):
+                plot.set_description(f"epoch {epoch}")
                 for batch in loader:
                     plot.log(loss=train_step(batch))
                     plot.update()
             plot.finish()
+            ```
         """
         self._wrapping = True
         if self._bar is None and self._own_bar is None:
@@ -1140,12 +1614,23 @@ class LivePlot:
             self._own_bar.update(n)
 
     def set_description(self, desc=None, refresh=True):
-        """Like tqdm's `set_description`: the text before the bar (e.g. f"epoch {epoch}")."""
+        """Set the text before the progress bar, like tqdm's `set_description`.
+
+        Args:
+            desc (str | None): The text, e.g. `f"epoch {epoch}"`.
+            refresh (bool): Redraw the bar straight away.
+        """
         self._desc = desc
         if self._bar is not None:
             self._bar.set_description(desc, refresh=refresh)
 
     def __iter__(self):
+        """Iterate over the iterable given to the constructor: `for batch in plot`.
+
+        Each item advances the x-axis by one step, a progress bar is shown, and `finish()` is
+        called when the loop ends, including when it ends with `break` or an exception. Raises
+        `TypeError` if the plot was created without an iterable.
+        """
         if self._iterable is None:
             raise TypeError("nothing to iterate: use LivePlot(iterable, ...), or plot(iterable) inside your loop")
         try:
@@ -1155,11 +1640,32 @@ class LivePlot:
             self.finish()
 
     def log(self, *args, **metrics):
-        """
-        log(loss=0.3, acc=0.9)            step = the current loop step
-        log(step, loss=0.3)               explicit step
-        log(step, {"loss": 0.3})          dict form
-        Any value convertible to float works (tensors with one element included).
+        """Record one value for each of one or more metrics.
+
+        A metric is created the first time you log it. Each call adds one point per metric, at
+        the plot's current x (`plot.step`). Metrics can be logged at different rates: each keeps
+        its own list of points.
+
+        `log` does not advance x. Wrap the loop (`for batch in plot` or `plot(loader)`), call
+        `plot.update()`, or pass the step as the first argument. Otherwise every point has the
+        same x.
+
+        Args:
+            *args (Any): Optionally the x value for this call, then optionally a dict of metrics:
+                `log(step, loss=0.3)`, `log(step, {"loss": 0.3})` or `log({"loss": 0.3})`. In a
+                wrapped loop an explicit step applies to this call only. With no wrapped loop
+                it also becomes the x of later calls that give no step.
+            **metrics (float): Metric values by name: `log(loss=0.3, acc=0.9)`. A value is anything
+                `float()` accepts, including a one-element tensor.
+
+        Example:
+            ```python
+            plot = LivePlot(range(1000), "loss | acc")
+            for step in plot:
+                plot.log(loss=train_step())      # every step
+                if step % 50 == 0:
+                    plot.log(acc=evaluate())     # every 50 steps, same x-axis
+            ```
         """
         step = self.step
         if args:
@@ -1223,11 +1729,24 @@ class LivePlot:
             spec["title"] = " / ".join(spec["metrics"] + spec["secondary"])
 
     def axhline(self, y, label=None, *, metric=None, **kwargs):
-        """
-        Like matplotlib's `Axes.axhline`: a horizontal reference line at `y` with `label` in the legend,
-        dashed grey by default; any other kwargs (color, linestyle, linewidth, alpha, ...) go to the
-        artist. It goes on the axis of `metric`'s panel, or on the left axis of every panel if `metric`
-        is None. E.g. the loss a model must beat: `plot.axhline(math.log(d_vocab), "uniform", metric="loss")`.
+        """Draw a horizontal reference line.
+
+        With `metric`, the line goes on the axis that holds that metric, the same as
+        `plot[metric].axhline(y, label)`. Without it, the line goes on the left axis of every
+        panel that exists now. Panels created later do not get it. The line is dashed grey by
+        default and has a legend entry.
+
+        Args:
+            y (float): Where to draw the line.
+            label (str | None): The legend text. Defaults to the value of `y`.
+            metric (str | None): Draw the line only on the axis holding this metric.
+            **kwargs (Any): Passed to matplotlib's `Axes.axhline` (`color`, `linestyle`, `linewidth`,
+                `alpha`, ...).
+
+        Example:
+            ```python
+            plot.axhline(math.log(d_vocab), "uniform", metric="loss")
+            ```
         """
         if metric is not None:
             return self[metric].axhline(y, label, **kwargs)
@@ -1237,10 +1756,21 @@ class LivePlot:
         self._send_layout()
 
     def axvline(self, x=None, label=None, **kwargs):
-        """
-        Like matplotlib's `Axes.axvline`, on every panel: a vertical line at `x` (default: the current
-        step), dotted grey by default, with `label` written along it; other kwargs go to the artist.
-        E.g. `plot.axvline(label="lr drop")` where the learning rate changes.
+        """Draw a vertical line on every curve panel, including panels created later.
+
+        The line is dotted grey by default. For one panel only, use `Panel.axvline`.
+
+        Args:
+            x (float | None): Where to draw the line. Defaults to the current step (`plot.step`) at the time of
+                the call.
+            label (str | None): Text written along the line. It does not go in the legend.
+            **kwargs (Any): Passed to matplotlib's `Axes.axvline` (`color`, `linestyle`, ...).
+
+        Example:
+            ```python
+            if step == warmup_steps:
+                plot.axvline(label="warmup ends")
+            ```
         """
         line = {**kwargs, "x": float(self.step if x is None else x), "label": label}
         self.axvlines.append(line)
@@ -1250,9 +1780,28 @@ class LivePlot:
             self._renderer.add_axvline(line)
 
     def imshow(self, x, **kwargs):
-        """
-        Show an image on the plot, replacing whatever was there -- the whole of `LiveImage` in one
-        call. Uses the plot's image panel, creating it on first use. Keywords go to `Panel.imshow`.
+        """Show an image, or a batch of images as a grid, replacing the previous one.
+
+        The picture goes on the plot's first image panel. If the plot has none, one is added.
+        On a plot made by `subplots`, an image panel must already exist, so call `imshow` on a
+        panel there first.
+
+        Args:
+            x (ArrayLike): A torch tensor, numpy array or other array-like. See `Panel.imshow` for the
+                accepted shapes.
+            **kwargs (Any): Passed to `Panel.imshow` (`rows`, `cols`, `vmin`, `vmax`, ...).
+
+        Returns:
+            Panel: The panel that holds the image.
+
+        Example:
+            ```python
+            plot = LivePlot(range(steps))
+            for step in plot:
+                plot.log(loss=train_step())
+                if step % 100 == 0:
+                    plot.imshow(model(holdout), vmin=0, vmax=1)
+            ```
         """
         for i, spec in enumerate(self._specs):
             if spec["kind"] == "image":
@@ -1290,10 +1839,22 @@ class LivePlot:
             self._renderer.set_layout(self._specs)
 
     def figure(self):
-        """
-        A matplotlib Figure of the plot as it stands (same panels, data, reference lines and marks),
-        built on the calling thread and independent of the render process: title it, tweak it,
-        `fig.savefig("run.png")`, or show it in a report. Safe to call during or after training.
+        """Build a matplotlib `Figure` of the plot as it stands.
+
+        The figure has the same panels, data, reference lines and images as the live plot. It is
+        built from `data` on the calling thread and is separate from the live display, so
+        changing it does not change the live plot. It works during or after the run, and also
+        with `show=False` or outside a notebook.
+
+        Returns:
+            matplotlib.figure.Figure: A new figure.
+
+        Example:
+            ```python
+            fig = plot.figure()
+            fig.suptitle("run 12")
+            fig.savefig("run12.png", dpi=150)
+            ```
         """
         renderer = _FigureRenderer(self._panels_or_placeholder(), self.x_range, self._layout, images=self._image_state())
         for name, (xs, ys) in self.data.items():
@@ -1304,12 +1865,21 @@ class LivePlot:
         return renderer.fig
 
     def refresh(self):
-        """Force a redraw now (thread mode only; the render process paces itself)."""
+        """Redraw now, if drawing happens on the calling thread (`mode == "thread"`).
+
+        In the usual mode a separate process draws on its own schedule and this does nothing.
+        """
         if self.mode == "thread":
             self._show(self._renderer.render())
 
     def finish(self):
-        """Draw the final frame and shut the renderer down. Safe to call twice, and to interrupt."""
+        """Draw the final frame, close the progress bar and stop the render process.
+
+        Iterating the plot (`for batch in plot`) and the `with` block call this for you. Call it
+        yourself after nested loops that use `plot(loader)` or `plot.update()`. Calling it twice
+        is safe. `data` stays available afterwards. If `record` was a path, the GIF is written
+        here.
+        """
         if self._done:
             return
         self._done = True
@@ -1333,10 +1903,23 @@ class LivePlot:
                 self.save_gif(self._record_path)
 
     def save_gif(self, path, speedup: float = 1.0, max_frame_ms: int = 1000, hold_last_ms: int = 1500, colors: int = 256):
-        """
-        Write the recorded frames (needs `record=True`) as an animated GIF that replays at the real
-        pace of the run divided by `speedup`, with no single frame shown longer than `max_frame_ms`.
-        Returns the path. Uses Pillow (installed with matplotlib).
+        """Write the recorded frames as an animated GIF.
+
+        The plot must have been created with `record=True` or `record="path.gif"`. The GIF
+        replays at the pace of the run.
+
+        Args:
+            path (str): Where to write the GIF.
+            speedup: Replay this many times faster than the run.
+            max_frame_ms: Longest time any one frame is shown, in milliseconds.
+            hold_last_ms: How long the last frame is shown before the GIF loops.
+            colors: Size of the GIF's colour palette, at most 256.
+
+        Returns:
+            str: The path that was written.
+
+        Raises:
+            ValueError: If no frames were recorded.
         """
         import io
 
@@ -1364,6 +1947,15 @@ class LivePlot:
         return path
 
     def __enter__(self):
+        """Use the plot as a context manager: `finish()` is called when the block exits.
+
+        Example:
+            ```python
+            with LivePlot("loss") as plot:
+                for step in range(num_steps):
+                    plot.log(step, loss=train_step())
+            ```
+        """
         return self
 
     def __exit__(self, *exc):
