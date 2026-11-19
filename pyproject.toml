@@ -20,9 +20,11 @@ dependencies = ["matplotlib>=3.6", "numpy>=1.22", "pillow>=9"]
 [project.optional-dependencies]
 notebook = ["ipython>=8.0", "tqdm>=4.60"]  # the live display, and the progress bar
 test = ["pytest", "ipython>=8.0", "tqdm>=4.60"]
+docs = ["mkdocs>=1.6", "mkdocs-material>=9.5", "mkdocstrings[python]>=0.26", "ruff"]  # the website: mkdocs build --strict
 
 [project.urls]
 Homepage = "https://github.com/ARENA-education/liveplot"
+Documentation = "https://arena-education.github.io/liveplot/"
 
 [tool.setuptools.packages.find]
 include = ["liveplot*"]

@@ -1,0 +1,40 @@
+name: docs
+
+# Builds the documentation site (MkDocs + Material + mkdocstrings, from docs/, README.md and the
+# docstrings). On pull requests it only builds, with --strict, so a broken link or a docstring
+# that fails to render fails the check. On pushes to main it also publishes the built site to
+# the `gh-pages` branch. Nothing here touches the `site` branch or the repository's Pages
+# settings: the site goes live once Pages is pointed at `gh-pages` (Settings > Pages).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # only the publish step writes: it pushes the gh-pages branch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[docs]"
+      - name: Build
+        run: mkdocs build --strict
+      - name: Publish to the gh-pages branch
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdocs gh-deploy --strict --force --message "Build docs from main ${GITHUB_SHA::7}"

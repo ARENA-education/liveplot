@@ -1,227 +1,71 @@
 # liveplot
 
+<!-- --8<-- [start:intro] -->
 Live training curves in Jupyter, Colab and the VS Code / Cursor interactive window, with a tqdm bar underneath, at (almost) no cost to the training loop.
 
-[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ARENA-education/liveplot/blob/demo/examples/demo.ipynb) [![tests](https://github.com/ARENA-education/liveplot/actions/workflows/tests.yml/badge.svg)](https://github.com/ARENA-education/liveplot/actions/workflows/tests.yml)
-
-Try it in Colab with the badge above: that notebook is [`examples/demo.py`](examples/demo.py), a cell-by-cell tour of the features, which CI converts with jupytext and publishes to the `demo` branch on every push to `main`.
+[![docs](https://img.shields.io/badge/docs-arena--education.github.io%2Fliveplot-blue)](https://arena-education.github.io/liveplot/) [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ARENA-education/liveplot/blob/demo/examples/demo.ipynb) [![tests](https://github.com/ARENA-education/liveplot/actions/workflows/tests.yml/badge.svg)](https://github.com/ARENA-education/liveplot/actions/workflows/tests.yml)
+<!-- --8<-- [end:intro] -->
 
 ![training loss every step, eval loss and accuracy every 50 steps, on one panel with two y-axes](docs/demo.gif)
 
-The GIF is cell 2 of [`examples/demo.py`](examples/demo.py), a tour of the features in a cell-separated file: open it in the VS Code / Cursor interactive window and run it cell by cell. That cell trains a tiny numpy classifier, logging the training loss every step and the eval loss and accuracy every 50 steps, laid out as `"loss | eval_loss eval_acc"`. The GIF itself was recorded by the library: `examples/make_gif.py` runs the same loop as a plain script with `record="docs/demo.gif"`.
-
-```python
-from liveplot import LivePlot
-
-plot = LivePlot(range(num_steps))          # a tqdm bar + a live plot
-for step in plot:
-    loss, acc = train_step()
-    plot.log(loss=loss, acc=acc)           # step is implicit; the bar's postfix shows the latest values
-```
-
-Metrics are discovered from what you log. With no layout given they all share one panel, with a legend. To split them up, give panel strings:
-
-```python
-plot = LivePlot(range(num_steps), "loss", "return | entropy", "lossD lossG | acc")
-```
-
-Each string is one panel. Names separated by spaces share the left y-axis; names after a `|` go on a right-hand y-axis. Anything you log that no string mentions gets a panel of its own. Every panel has a legend.
-
-For nested loops, create the plot once and wrap the inner loop with `plot(...)`; the count, and so the x-axis, continues across epochs and you get one tqdm bar per epoch, as with tqdm:
-
-```python
-plot = LivePlot("loss", "acc", total=epochs * len(loader))
-for epoch in range(epochs):
-    for imgs, labels in plot(loader, desc=f"epoch {epoch}"):   # kwargs go to tqdm
-        plot.log(loss=train_step(imgs, labels))
-    plot.log(acc=evaluate())                                    # metrics can have different cadences
-plot.finish()                                                   # or wrap the whole thing in `with LivePlot(...) as plot:`
-```
-
-If you'd rather supply the x values yourself, use the context manager and pass the step to `log`:
-
-```python
-with LivePlot("loss", "acc", total=num_steps) as plot:
-    for step in range(num_steps):
-        plot.log(step, loss=train_step())
-```
-
-Already have a tqdm bar? Pass it as the iterable and it is reused instead of wrapped: `LivePlot(tqdm(loader), "loss")`.
-
-## Metrics logged at different rates
-
-Nothing special is needed. Every metric keeps its own list of `(x, value)` points, and each `log` call stamps its metrics with the current x. A metric logged every step gets a point per step; one logged every 50 steps, or once per epoch after the inner loop, gets a point wherever the count was at the time and is drawn as a line through those points. So in `"loss | eval_loss eval_acc"` the left axis fills in continuously while the right axis grows a point every 50 steps, all against the same x.
-
-## The x-axis
-
-It follows tqdm: the plot counts items consumed and never looks at their values.
-
-    x = initial + n * unit_scale
-
-`n` is 0 inside the loop body for the first item, like `for step in range(N)`. `initial` shifts the start (`initial=1` for 1-based, `initial=10` to plot `range(10, 20)` at its values). `unit` and `unit_scale` relabel and rescale it: `unit="examples", unit_scale=batch_size` plots against examples seen, and the tqdm bar shows the same numbers. `total`, in items like tqdm's, sets the bar's length (and, with `fixed_x=True`, the x range); the single-loop form takes it from `len(iterable)`. An explicit `plot.log(step, ...)` uses that x for that call only, like wandb's `step=`.
-
+<!-- --8<-- [start:overview] -->
 ## Install
 
 ```
 pip install "liveplot[notebook] @ git+https://github.com/ARENA-education/liveplot.git"
 ```
 
-`matplotlib` is the only hard requirement (`numpy` and `pillow`, which the smoother and `save_gif` use, come with it). The `notebook` extra adds `ipython` for the live display and `tqdm` for the bar; any notebook already has both, so plain `pip install git+...` is fine there, and without them the plot silently just collects `plot.data`.
+`matplotlib`, `numpy` and `pillow` are the requirements. The `notebook` extra adds `ipython` for the live display and `tqdm` for the progress bar. A notebook already has both, so plain `pip install git+https://github.com/ARENA-education/liveplot.git` is enough there.
 
-## How it works
-
-The training thread only appends numbers (about 40 µs per `log`). A separate render process owns the matplotlib figure, redraws it at most once per `refresh_seconds` (default 1; `0` means on every arrival), and sends back PNG bytes that get swapped into a fixed output cell. The output is a plain image, so it behaves identically in Jupyter, Colab, VS Code and Cursor: no widgets, no JavaScript, no CDN.
-
-Interrupting the cell is safe. Jupyter sends its interrupt to every process the kernel started; the render process ignores it, so you get a frozen plot with `plot.data` intact. A plot that is dropped without `finish()` shuts its process down when garbage collected, and the process exits by itself if the notebook kernel dies.
-
-## Options
-
-| | |
-|---|---|
-| `total`, `initial`, `unit`, `unit_scale` | tqdm's arguments, with tqdm's meaning; they define the x-axis (see above) |
-| `fixed_x` | `False` (default): the x-axis grows with the data, while the progress bar still shows the total. `True`: with a known `total`, the x-axis spans the whole run from the start |
-| `refresh_seconds` | minimum time between redraws (default 1.0). Points arriving in between are batched into the next frame. `0` redraws whenever new data arrives, as fast as rendering allows (roughly 0.15 s per frame at a few thousand points), and costs nothing while idle. |
-| `max_cols`, `rows`, `cols` | grid shape; `max_cols=None` gives a near-square grid |
-| `show` | `False`: draw nothing (metrics are still collected, and shown on the progress bar) |
-| `progress`, `desc` | disable the bundled tqdm bars, or give the single-loop form's bar a description |
-| `cell_size`, `dpi` | size of each panel in inches, and PNG resolution |
-| `record` | `True` keeps every rendered frame in `plot.frames`; a path such as `"run.gif"` also writes an animated GIF at `finish()`. `plot.save_gif(path, speedup=1.0)` does it on demand. Works outside a notebook too. |
-
-## Titles, labels, limits: matplotlib's names
-
-Panels and axes are addressed and configured with the setters you already know from matplotlib, before or during the loop:
+## Quickstart
 
 ```python
-plot = LivePlot(loader, "loss | acc", "lr")
+from liveplot import LivePlot
 
-plot["acc"].set_ylim(0, 1)                     # plot[metric] is the y-axis holding that metric (left or right)
-plot["acc"].set_ylabel("test accuracy")
-plot["loss"].axhline(0.1, label="target", color="red")   # extra kwargs go to the matplotlib artist
-
-plot.panels[0].set_title("training")           # a panel: set_title, set_xlabel, set_xlim, set_smooth, axvline
-plot.panels[0].set_xlim(0, 10_000)
-plot.panels[0].axvline(label="lr drop")        # at the current x
-
-plot.set(xlabel="examples", smooth=0.9)        # on the plot itself: every panel, like Axes.set(**kwargs)
+plot = LivePlot(loader, "loss | acc", "lr")   # wrap the loop, like tqdm
+plot["acc"].set_ylim(0, 1)                    # configure, like matplotlib
+for batch in plot:
+    loss, acc = train_step(batch)
+    plot.log(loss=loss, acc=acc, lr=lr)       # log, like wandb
 ```
 
-`plot[metric]` finds the right-hand axis too, so there is no separate spelling for it; `plot.panels[i].left` / `.right` name the two axes explicitly. Everything on an axis takes matplotlib's name and signature: `set_ylabel`, `set_ylim` (two arguments or a tuple), `set_yscale("log")`, `axhline`, `set(**kwargs)`, and the panel's own setters are reachable from it as they would be on an `Axes`. A setter called mid-run just triggers a re-layout on the next frame.
+- **Wrap the loop.** `LivePlot(loader)` yields the loader's items. Each item moves the x-axis one step and updates the progress bar. `plot.log` on its own does not move x.
+- **Log by name.** `plot.log(loss=loss)` adds a point to the curve `loss` at the current x. A metric exists from the first time you log it.
+- **Lay out with strings.** Each string is one panel. Names separated by spaces share a y-axis. Names after `|` go on a right-hand y-axis. Here `loss` and `acc` share a panel with two y-axes, and `lr` has its own panel. With no strings, every metric shares one panel.
+- **Configure with matplotlib's names.** `plot["acc"]` is the y-axis that holds `acc`.
 
-The dict form, `{"metrics": ["acc"], "ylim": (0, 1), ...}`, is still accepted in the layout list but the setters are the intended way.
-
-`plot.figure()` returns a matplotlib Figure of the plot as it stands, built independently of the live renderer, for `fig.savefig(...)`, a title, or any other tweak.
-
-`plot.log` accepts keywords, an explicit step (`plot.log(step, loss=...)`), or a dict (`plot.log(step, {"loss": ...})`). Values can be anything `float()` accepts, including one-element tensors. `plot.data` holds the full history as `{metric: (steps, values)}` and `plot.latest` the most recent value of each.
-
-## Reference lines
-
-Matplotlib's `axhline` / `axvline`, on an axis, a panel, or the whole plot. Horizontal lines get a legend entry; extra kwargs go to the artist.
+For nested epoch and batch loops, create the plot once and wrap the inner loop with `plot(...)`. The x-axis continues across epochs:
 
 ```python
-plot["loss"].axhline(math.log(d_vocab), "uniform")        # the level a curve should beat
-plot["return"].axhline(500, "solved", color="green")
-plot.axvline(label="lr drop")                             # every panel, at the current x
-plot.panels[1].axvline(2000, "checkpoint", linestyle="-")  # one panel, at a given x
-```
-
-## Images beside curves: `subplots`
-
-`LivePlot.subplots` mirrors `plt.subplots`, and a panel can hold a picture instead of lines. That
-gives you the shape a GAN training loop wants: loss curves updating every step, generated samples
-every so often, in one figure and one output cell.
-
-```python
-plot, (ax_loss, ax_samples) = LivePlot.subplots(1, 2, total=epochs * len(loader), figsize=(11, 4))
-ax_loss.plot("lossD", "lossG")            # which metrics live on this axis
-ax_loss.twinx().plot("D(x)")              # matplotlib's own spelling for a right-hand axis
-ax_samples.set_title("generator samples")
-
+plot = LivePlot("loss", "acc")
 for epoch in range(epochs):
-    for imgs, _ in plot(loader, desc=f"epoch {epoch}"):
-        plot.log(lossD=..., lossG=...)                                   # every step
-        if step % 250 == 0:
-            ax_samples.imshow(netG(fixed_noise), rows=2, vmin=-1, vmax=1)  # replaces the last one
+    for batch in plot(loader, desc=f"epoch {epoch}"):
+        plot.log(loss=train_step(batch))      # one point per batch
+    plot.log(acc=evaluate())                  # one point per epoch
 plot.finish()
 ```
 
-`ax.plot("lossD", "lossG")` names metrics rather than passing data, which is matplotlib's own
-`ax.plot("lossD", data=d)` form with the data source implicit -- the plot is the source, filled in
-later by `log()`. `axes` follows matplotlib's squeeze rules: one panel for 1x1, a flat list for a
-single row or column, a 2-d grid otherwise (`axes[0][1]` and `axes[0, 1]` both work, and
-`axes.flat` walks it). `figsize` is the whole figure in inches, as matplotlib means it, and
-`width_ratios` / `height_ratios` are matplotlib's too: `width_ratios=(1, 1.25)` gives a wide grid
-of samples more room. `ax.legend(**kwargs)` goes to `Axes.legend`, so a crowded legend can move
-off the curves: `ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncols=3)`.
+The plot is drawn by a separate process and shown as a plain image, so it behaves the same in every notebook front end, and interrupting a cell is safe. Everything you log is also kept in `plot.data`.
+<!-- --8<-- [end:overview] -->
 
-A training loop that already drives its own bar, one for the whole run rather than one per epoch,
-keeps its shape: `plot.update()` and `plot.set_description(...)` are tqdm's manual-mode methods,
-and the first `update()` opens the bar below the figure.
+## Documentation
 
-```python
-plot, (ax_loss, ax_samples) = LivePlot.subplots(1, 2, total=epochs * len(loader), width_ratios=(1, 1.25))
-for epoch in range(epochs):
-    plot.set_description(f"epoch {epoch}")
-    for imgs, _ in loader:
-        plot.log(lossD=..., lossG=...)
-        plot.update()
-plot.finish()
+The documentation is at **<https://arena-education.github.io/liveplot/>**:
+
+- [Common questions](https://arena-education.github.io/liveplot/questions/): is `total` needed, why wrap the dataloader, two metrics on one axis, a right-hand axis, several panels.
+- [Guide](https://arena-education.github.io/liveplot/guide/x-axis/): the x-axis, panels, logging at different rates, customising axes, reference lines, images, smoothing, saving and recording.
+- [API reference](https://arena-education.github.io/liveplot/api/): every class and method, generated from the docstrings.
+
+The pages are built from [`docs/`](docs/) and the docstrings in [`liveplot/liveplot.py`](liveplot/liveplot.py). To build them locally:
+
+```
+pip install -e ".[docs]"
+mkdocs serve
 ```
 
-[`examples/dcgan_synthetic.py`](examples/dcgan_synthetic.py) is the whole thing on a fake DCGAN run
-laid out like ARENA's [0.5] trainer: smoothed losses with `ln 4` / `ln 2` reference lines and the
-discriminator's outputs on a right-hand axis, beside ten CelebA faces coming out of the noise.
+## Examples
 
-For a single picture with no curves, `plot.imshow(x)` makes the panel on first use and every later
-call replaces it:
-
-```python
-plot = LivePlot()
-for step in ...:
-    plot.imshow(model(holdout))     # overwrites, rather than stacking a new plot underneath
-```
-
-### What `imshow` accepts
-
-A batch is tiled into a grid for you: `rows=` or `cols=` alone infers the other, `griddim=(r, c)`
-fixes both, padding with blanks or dropping the tail as needed.
-
-| input | read as |
-|---|---|
-| `(H, W)`, `(1, H, W)` | one grayscale image |
-| `(H, W, 3)`, `(H, W, 4)` | one colour image, channels last |
-| `(B, H, W)` | `B` grayscale images |
-| `(B, 1\|3\|4, H, W)` | `B` images, channels first (torch's layout) |
-| `(B, H, W, 1\|3\|4)` | `B` images, channels last |
-
-`(3, H, W)` and `(4, H, W)` are the ambiguous ones -- one colour image, or that many grayscale? --
-so they raise, naming the `channels=` to pass. matplotlib sidesteps this by refusing channels-first
-outright; torch holds images that way, so the ambiguity is ours to resolve rather than ignore.
-
-Torch tensors go straight in: the conversion (`detach`, off the GPU, tile, scale to `uint8`) happens
-on the calling thread, costs about 0.2 ms for ten 64x64 RGB samples, and means the render process
-only ever unpickles a finished picture. Nothing in liveplot imports torch.
-
-### Scaling
-
-Values are scaled to the full range of the batch by default. `vmin` / `vmax` fix the range instead,
-which is worth doing for a live view -- otherwise the black point moves every frame. `scale_each=True`
-scales each image on its own, as `torchvision.utils.make_grid` does; it is off by default because it
-hides exactly what you watch samples for, a washed-out or collapsed one stops looking anomalous.
-`uint8` input passes through untouched.
-
-Note that liveplot does this scaling itself rather than leaving it to matplotlib, and so `vmin` /
-`vmax` work for colour images too. matplotlib's `imshow` **ignores** them for RGB(A) data and merely
-clips floats to `[0, 1]`: a generator ending in `tanh` outputs `[-1, 1]`, and roughly 45% of it would
-go to black with no way to say otherwise.
-
-## Smoothing and log axes
-
-Per-step losses are noisy. `set_smooth(0.9)` draws each curve of a panel through wandb's default smoothing, the [time-weighted exponential moving average](https://docs.wandb.ai/models/app/features/panels/line-plot/smoothing), with the same 0 to 1 weight as wandb's smoothing slider and the raw values faded behind. On the plot it applies to every panel; `set_smooth(0)` turns it off. `set_yscale("log")` on an axis, a panel, or the plot gives log axes.
-
-```python
-plot.set_smooth(0.9)
-plot["loss"].set_yscale("log")
-```
+[`examples/demo.py`](https://github.com/ARENA-education/liveplot/blob/main/examples/demo.py) is a cell-by-cell tour of the features. Run it in the VS Code / Cursor interactive window, or [open it in Colab](https://colab.research.google.com/github/ARENA-education/liveplot/blob/demo/examples/demo.ipynb): CI converts it to a notebook on the `demo` branch on every push to `main`. The GIF above is cell 2 of that file, recorded by the library itself in [`examples/make_gif.py`](https://github.com/ARENA-education/liveplot/blob/main/examples/make_gif.py). [`examples/dcgan_synthetic.py`](https://github.com/ARENA-education/liveplot/blob/main/examples/dcgan_synthetic.py) shows loss curves beside generated images.
 
 ## Credits
 
