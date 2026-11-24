@@ -256,18 +256,25 @@ def _grid_shape(n_panels: int, max_cols: int | None, rows: int | None, cols: int
 
 def _compact_formatter():
     """
-    A tick formatter for the x-axis that writes large numbers as 100k, 1.5M, 2B, so the labels of a
+    A tick formatter for the x-axis that writes large numbers as 100k, 1.5M, 2B, 3T, so the labels of a
     long run (e.g. 300000 examples) don't run into each other. One suffix per axis, chosen from its
-    largest tick; an axis whose ticks all stay below 10,000 is labelled as matplotlib would.
+    largest tick. Below 10,000 the axis is labelled as matplotlib would; from 1e15 it switches to
+    matplotlib's scientific notation.
     """
+    import matplotlib
     from matplotlib.ticker import ScalarFormatter
 
     class CompactFormatter(ScalarFormatter):
         def set_locs(self, locs):
-            super().set_locs(locs)
             vmin, vmax = sorted(self.axis.get_view_interval()) if self.axis is not None else (0, 0)
             big = max([abs(v) for v in locs if vmin <= v <= vmax] or [0])
-            self.scale, self.suffix = next(((10.0**p, x) for p, x in ((9, "B"), (6, "M"), (3, "k")) if big >= max(10.0**p, 1e4)), (1, ""))
+            self.scale, self.suffix = next(((10.0**p, x) for p, x in ((12, "T"), (9, "B"), (6, "M"), (3, "k")) if big >= max(10.0**p, 1e4)), (1, ""))
+            if big >= 1e15:  # past T: matplotlib's scientific notation (ticks 0, 0.5, 1 ... and "1e15" at the axis end)
+                self.scale, self.suffix = 1, ""
+                self.set_powerlimits((0, 0))
+            else:
+                self.set_powerlimits(matplotlib.rcParams["axes.formatter.limits"])
+            super().set_locs(locs)
 
         def __call__(self, x, pos=None):
             if not getattr(self, "suffix", ""):

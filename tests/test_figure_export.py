@@ -41,7 +41,8 @@ def _xticks(p):
 
 def test_large_x_ticks_are_compact():
     for n, expected in [(300_000, ["0", "50k", "100k", "150k", "200k", "250k", "300k"]),
-                        (2_500_000, ["0", "0.5M", "1M", "1.5M", "2M", "2.5M"])]:
+                        (2_500_000, ["0", "0.5M", "1M", "1.5M", "2M", "2.5M"]),
+                        (3e12, ["0", "0.5T", "1T", "1.5T", "2T", "2.5T", "3T"])]:
         p = LivePlot(progress=False, show=False)
         for i in range(11):
             p.log(n * i / 10, loss=1.0)
@@ -53,3 +54,11 @@ def test_small_x_ticks_unchanged():
     for i in range(11):
         p.log(500 * i, loss=1.0)
     assert _xticks(p) == ["0", "1000", "2000", "3000", "4000", "5000"]
+
+
+def test_x_ticks_past_trillions_are_scientific():
+    p = LivePlot(progress=False, show=False)
+    for i in range(11):
+        p.log(3e15 * i / 10, loss=1.0)
+    assert _xticks(p) == ["0.0", "0.5", "1.0", "1.5", "2.0", "2.5", "3.0"]
+    assert p.figure().axes[0].xaxis.get_major_formatter().get_offset() == "1e15"
