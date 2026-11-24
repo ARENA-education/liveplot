@@ -136,3 +136,14 @@ The x values are then 0, `batch_size`, `2 * batch_size`, and so on. The progress
 ## Reading the current x
 
 [`plot.step`][liveplot.LivePlot.step] is the x that a `log` call would get right now. `plot.n` is the raw item count.
+
+## `si_xticks`
+
+By default the x tick labels are matplotlib's: numbers are written in full up to a million. On a long run counted in examples, such as 300,000, those labels can run into each other. `si_xticks=True` writes them with SI prefixes instead:
+
+```python
+plot = LivePlot("loss", total=epochs * len(loader), unit="examples", unit_scale=batch_size, si_xticks=True)
+# x ticks: 0, 50k, 100k, ... 300k
+```
+
+The prefix is chosen once per axis, from its largest tick: k, M, G, then T. An axis whose ticks stay below 10,000 is labelled as before. From 10¹⁵ on, the axis uses matplotlib's scientific notation, with the power at the end of the axis. `LivePlot.subplots` takes the same argument.

@@ -132,7 +132,7 @@ import warnings
 import weakref
 
 _PANEL_KEYS = {"title", "metrics", "secondary", "xlabel", "ylabel", "ylabel2", "xlim", "ylim", "ylim2", "axhlines", "axhlines2",
-               "axvlines", "smooth", "yscale", "yscale2", "kind", "cmap", "legend"}
+               "axvlines", "smooth", "yscale", "yscale2", "kind", "cmap", "legend", "si_xticks"}
 _REF_LINE_STYLE = {"linestyle": "--", "linewidth": 1, "color": "0.45"}  # defaults for axhline / axvline artists
 
 
@@ -199,6 +199,7 @@ def _normalise_panel(spec, allow_empty: bool = False) -> dict:
         "axhlines": _normalise_axhlines(spec.get("axhlines")),  # reference lines on the left axis (see _normalise_axhlines)
         "axhlines2": _normalise_axhlines(spec.get("axhlines2")),  # ... and on the right axis
         "axvlines": [dict(kw) for kw in spec.get("axvlines") or []],  # vertical lines on this panel only (axvline kwargs)
+        "si_xticks": spec.get("si_xticks"),  # x tick labels as 100k, 1.5M, 2G, 3T; None = plot-wide default
         "smooth": _check_smooth(spec.get("smooth")),  # TWEMA weight in [0, 1); None = plot-wide default; 0 = off
         "yscale": spec.get("yscale", "linear"),  # "linear" or "log", left axis
         "yscale2": spec.get("yscale2", "linear"),  # ... right axis
@@ -252,6 +253,39 @@ def _grid_shape(n_panels: int, max_cols: int | None, rows: int | None, cols: int
         return math.ceil(n_panels / cols), cols
     rows = math.ceil(math.sqrt(n_panels))
     return rows, math.ceil(n_panels / rows)
+
+
+def _compact_formatter():
+    """
+    The x tick formatter for `si_xticks=True`: large numbers as 100k, 1.5M, 2G, 3T (SI prefixes), so the
+    labels of a long run (e.g. 300000 examples) don't run into each other. One prefix per axis, chosen
+    from its largest tick. Below 10,000 the axis is labelled as matplotlib would; from 1e15 it switches
+    to matplotlib's scientific notation.
+    """
+    import matplotlib
+    from matplotlib.ticker import ScalarFormatter
+
+    class CompactFormatter(ScalarFormatter):
+        def set_locs(self, locs):
+            vmin, vmax = sorted(self.axis.get_view_interval()) if self.axis is not None else (0, 0)
+            big = max([abs(v) for v in locs if vmin <= v <= vmax] or [0])
+            self.scale, self.suffix = next(((10.0**p, x) for p, x in ((12, "T"), (9, "G"), (6, "M"), (3, "k")) if big >= max(10.0**p, 1e4)), (1, ""))
+            if big >= 1e15:  # past T: matplotlib's scientific notation (ticks 0, 0.5, 1 ... and "1e15" at the axis end)
+                self.scale, self.suffix = 1, ""
+                self.set_powerlimits((0, 0))
+            else:
+                self.set_powerlimits(matplotlib.rcParams["axes.formatter.limits"])
+            super().set_locs(locs)
+
+        def __call__(self, x, pos=None):
+            if not getattr(self, "suffix", ""):
+                return super().__call__(x, pos)
+            return "0" if x == 0 else self.fix_minus(f"{round(x / self.scale, 6):g}{self.suffix}")
+
+        def get_offset(self):
+            return "" if getattr(self, "suffix", "") else super().get_offset()
+
+    return CompactFormatter()
 
 
 # --------------------------------------------------------------------------- the figure
@@ -333,6 +367,8 @@ class _FigureRenderer:
                     names = names + [kw["label"]]
             ax.set_title(panel["title"])
             ax.set_xlabel(panel["xlabel"] or xlabel)
+            if panel["si_xticks"]:
+                ax.xaxis.set_major_formatter(_compact_formatter())
             xlim = panel["xlim"] or self.xlim
             if xlim:
                 ax.set_xlim(*xlim)
@@ -1105,6 +1141,7 @@ class LivePlot:
         unit (str): The `unit` argument.
         unit_scale (int | float): The `unit_scale` argument.
         fixed_x (bool): The `fixed_x` argument.
+        si_xticks (bool): The `si_xticks` argument.
         refresh_seconds (float): The `refresh_seconds` argument.
         smooth (float | None): The default smoothing weight for panels.
         mode (str): `"process"` when a separate render process draws the figure, `"thread"` when
@@ -1135,6 +1172,7 @@ class LivePlot:
         record: bool | str = False,
         smooth: float | None = None,
         fixed_x: bool = False,
+        si_xticks: bool = False,
     ):
         """Create a plot: `LivePlot([iterable,] *panels, **options)`.
 
@@ -1185,8 +1223,13 @@ class LivePlot:
                 known `total`, fixes the x-axis to `(initial, initial + total * unit_scale)` from
                 the first frame, so the curve grows into an axis that already spans the run.
                 It has no effect without a `total`.
+            si_xticks: `True` labels the x-axis with SI prefixes (100k, 1.5M, 2G, 3T), for long
+                runs whose tick labels would otherwise run into each other, e.g. 300000 examples.
+                Axes below 10,000 are unchanged, and from 1e15 matplotlib's scientific notation is
+                used. `False` (the default) leaves matplotlib's usual labels.
         """
         iterable, specs = (args[0], args[1:]) if args and not isinstance(args[0], (str, dict)) else (None, args)
+        self.si_xticks = si_xticks
         self.smooth = _check_smooth(smooth)  # default TWEMA weight for panels that don't set their own (wandb's smoothing slider)
         self._panel_defaults: dict = {}  # plot-level set_*() values, applied to panels created later
         self._specs = [self._with_defaults(_normalise_panel(p)) for p in specs]
@@ -1253,6 +1296,8 @@ class LivePlot:
     def _with_defaults(self, panel):
         if panel["smooth"] is None:
             panel["smooth"] = self.smooth
+        if panel["si_xticks"] is None:
+            panel["si_xticks"] = self.si_xticks
         for key, value in self._panel_defaults.items():  # plot-level set_xlabel(...) etc. made before the panel existed
             panel[key] = value
         return panel
