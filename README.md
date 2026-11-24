@@ -53,7 +53,7 @@ The plot is drawn by a separate process and shown as a plain image, so it behave
 The documentation is at **<https://arena-education.github.io/liveplot/>**:
 
 - [Common questions](https://arena-education.github.io/liveplot/questions/): is `total` needed, why wrap the dataloader, two metrics on one axis, a right-hand axis, several panels.
-- [Guide](https://arena-education.github.io/liveplot/guide/x-axis/): the x-axis, panels, logging at different rates, customising axes, reference lines, images, smoothing, saving and recording.
+- [Guide](https://arena-education.github.io/liveplot/guide/): the x-axis, panels, logging at different rates, customising axes, reference lines, images, smoothing, saving and recording.
 - [API reference](https://arena-education.github.io/liveplot/api/): every class and method, generated from the docstrings.
 
 The pages are built from [`docs/`](docs/) and the docstrings in [`liveplot/liveplot.py`](liveplot/liveplot.py). To build them locally:

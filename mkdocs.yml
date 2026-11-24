@@ -9,6 +9,7 @@ theme:
   name: material
   features:
     - navigation.sections
+    - navigation.indexes  # docs/guide/index.md is the Guide section's own page, at /guide/
     - navigation.top
     - content.code.copy
     - toc.follow
@@ -30,6 +31,7 @@ nav:
   - Home: index.md
   - Common questions: questions.md
   - Guide:
+      - guide/index.md
       - The x-axis and total: guide/x-axis.md
       - Panels and layout strings: guide/panels.md
       - Logging at different rates: guide/logging.md
