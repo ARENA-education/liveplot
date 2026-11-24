@@ -29,3 +29,27 @@ def test_figure_before_any_data():
     p = LivePlot(progress=False)
     fig = p.figure()
     assert fig.axes and fig.axes[0].get_title() == "waiting for data…"
+
+
+def _xticks(p):
+    fig = p.figure()
+    fig.canvas.draw()
+    ax = fig.axes[0]
+    lo, hi = sorted(ax.get_xlim())
+    return [t.get_text() for t, x in zip(ax.get_xticklabels(), ax.get_xticks()) if lo <= x <= hi]
+
+
+def test_large_x_ticks_are_compact():
+    for n, expected in [(300_000, ["0", "50k", "100k", "150k", "200k", "250k", "300k"]),
+                        (2_500_000, ["0", "0.5M", "1M", "1.5M", "2M", "2.5M"])]:
+        p = LivePlot(progress=False, show=False)
+        for i in range(11):
+            p.log(n * i / 10, loss=1.0)
+        assert _xticks(p) == expected
+
+
+def test_small_x_ticks_unchanged():
+    p = LivePlot(progress=False, show=False)
+    for i in range(11):
+        p.log(500 * i, loss=1.0)
+    assert _xticks(p) == ["0", "1000", "2000", "3000", "4000", "5000"]

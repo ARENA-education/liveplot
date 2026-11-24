@@ -254,6 +254,32 @@ def _grid_shape(n_panels: int, max_cols: int | None, rows: int | None, cols: int
     return rows, math.ceil(n_panels / rows)
 
 
+def _compact_formatter():
+    """
+    A tick formatter for the x-axis that writes large numbers as 100k, 1.5M, 2B, so the labels of a
+    long run (e.g. 300000 examples) don't run into each other. One suffix per axis, chosen from its
+    largest tick; an axis whose ticks all stay below 10,000 is labelled as matplotlib would.
+    """
+    from matplotlib.ticker import ScalarFormatter
+
+    class CompactFormatter(ScalarFormatter):
+        def set_locs(self, locs):
+            super().set_locs(locs)
+            vmin, vmax = sorted(self.axis.get_view_interval()) if self.axis is not None else (0, 0)
+            big = max([abs(v) for v in locs if vmin <= v <= vmax] or [0])
+            self.scale, self.suffix = next(((10.0**p, x) for p, x in ((9, "B"), (6, "M"), (3, "k")) if big >= max(10.0**p, 1e4)), (1, ""))
+
+        def __call__(self, x, pos=None):
+            if not getattr(self, "suffix", ""):
+                return super().__call__(x, pos)
+            return "0" if x == 0 else self.fix_minus(f"{round(x / self.scale, 6):g}{self.suffix}")
+
+        def get_offset(self):
+            return "" if getattr(self, "suffix", "") else super().get_offset()
+
+    return CompactFormatter()
+
+
 # --------------------------------------------------------------------------- the figure
 
 
@@ -333,6 +359,7 @@ class _FigureRenderer:
                     names = names + [kw["label"]]
             ax.set_title(panel["title"])
             ax.set_xlabel(panel["xlabel"] or xlabel)
+            ax.xaxis.set_major_formatter(_compact_formatter())
             xlim = panel["xlim"] or self.xlim
             if xlim:
                 ax.set_xlim(*xlim)
