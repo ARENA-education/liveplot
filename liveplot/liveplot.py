@@ -132,7 +132,7 @@ import warnings
 import weakref
 
 _PANEL_KEYS = {"title", "metrics", "secondary", "xlabel", "ylabel", "ylabel2", "xlim", "ylim", "ylim2", "axhlines", "axhlines2",
-               "axvlines", "smooth", "yscale", "yscale2", "kind", "cmap", "legend", "si_xticks"}
+               "axvlines", "smooth", "yscale", "yscale2", "marker", "marker2", "kind", "cmap", "legend", "si_xticks"}
 _REF_LINE_STYLE = {"linestyle": "--", "linewidth": 1, "color": "0.45"}  # defaults for axhline / axvline artists
 
 
@@ -203,6 +203,8 @@ def _normalise_panel(spec, allow_empty: bool = False) -> dict:
         "smooth": _check_smooth(spec.get("smooth")),  # TWEMA weight in [0, 1); None = plot-wide default; 0 = off
         "yscale": spec.get("yscale", "linear"),  # "linear" or "log", left axis
         "yscale2": spec.get("yscale2", "linear"),  # ... right axis
+        "marker": spec.get("marker"),  # matplotlib marker drawn on each point, left axis ("o" for dots); None = plain line
+        "marker2": spec.get("marker2"),  # ... right axis
         "kind": kind,  # "curve" (metric lines) or "image" (one picture, overwritten in place)
         "cmap": spec.get("cmap", "gray"),  # image panels only; matplotlib ignores it for RGB data
         "legend": dict(spec.get("legend") or {}),  # Axes.legend kwargs (loc, ncols, bbox_to_anchor, ...)
@@ -356,7 +358,8 @@ class _FigureRenderer:
                 color = palette[j % len(palette)]
                 if window:
                     (self.raw_lines[name],) = target.plot([], [], lw=0.8, color=color, alpha=0.25)
-                (line,) = target.plot([], [], lw=1.2, color=color, label=name)
+                marker = panel["marker2"] if target is ax2 else panel["marker"]
+                (line,) = target.plot([], [], lw=1.2, color=color, label=name, marker=marker, markersize=4)
                 self.lines[name] = line
                 self.smooth[name] = window
                 self.hist.setdefault(name, ([], []))
@@ -707,6 +710,22 @@ class _Axis:
         assert value in ("linear", "log"), f"yscale must be 'linear' or 'log', got {value!r}"
         self._set("yscale", value)
 
+    def set_marker(self, marker):
+        """Draw a marker on every point of this axis's curves, or `None` for plain lines (the default).
+
+        Useful for a metric logged rarely, such as an eval once per epoch: each eval shows as a
+        dot, and a single point (a baseline logged before training) is visible straight away.
+
+        Args:
+            marker (str | None): A matplotlib marker, such as `"o"` for dots.
+
+        Example:
+            ```python
+            plot["acc"].set_marker("o")
+            ```
+        """
+        self._set("marker", marker)
+
     def axhline(self, y, label=None, **kwargs):
         """Draw a horizontal reference line on this axis.
 
@@ -733,7 +752,7 @@ class _Axis:
         Each keyword `name=value` calls `set_name(value)`.
 
         Args:
-            **kwargs (Any): Any of `ylabel`, `ylim`, `yscale` (this axis) and `title`, `xlabel`, `xlim`,
+            **kwargs (Any): Any of `ylabel`, `ylim`, `yscale`, `marker` (this axis) and `title`, `xlabel`, `xlim`,
                 `smooth` (the panel). Limits are `(low, high)` pairs. An unknown name raises
                 `AttributeError`.
 

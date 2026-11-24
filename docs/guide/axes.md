@@ -36,6 +36,7 @@ On an axis ([reference](../api.md#liveplot.liveplot._Axis)):
 | `set_ylabel(text)` | The y label |
 | `set_ylim(low, high)` | Fix the y range. Also accepts one `(low, high)` pair. Both limits are required. |
 | `set_yscale("log")` | `"linear"` or `"log"` |
+| `set_marker("o")` | A dot on every point of this axis's curves, e.g. for an eval logged once per epoch. `None` turns it off. |
 | `axhline(y, label)` | A horizontal [reference line](reference-lines.md) |
 
 On a panel ([reference][liveplot.liveplot.Panel]):
