@@ -2,30 +2,28 @@
 
 ## A separate render process
 
-`plot.log` only appends numbers to lists and puts them on a queue. It does no drawing.
+`plot.log` appends numbers and queues them; it never draws.
 
-A separate process owns the matplotlib figure. It redraws at most once every `refresh_seconds` (1.0 by default), and only when new data has arrived. Points that arrive between redraws are drawn together in the next frame. `refresh_seconds=0` redraws whenever new data arrives, as fast as rendering allows.
+A separate process owns the matplotlib figure. It redraws at most every `refresh_seconds` (default 1.0), only when there's new data; points in between share a frame. `refresh_seconds=0` redraws on every arrival.
 
-Each frame comes back as PNG bytes and replaces the image in the notebook's output cell. The output is a plain image. It needs no widgets and no JavaScript, so it behaves the same in Jupyter, Colab, VS Code and Cursor.
+Each frame comes back as a PNG and replaces the image in the output cell. No widgets, no JavaScript, so Jupyter, Colab, VS Code and Cursor all behave the same. A background thread shows each frame as soon as it's ready, so rarely-logging loops still update on time.
 
-A small background thread shows each frame as soon as it is ready, so a loop that logs rarely still sees its frames on time.
+If the render process can't start, liveplot warns and draws inside `log` instead. `plot.mode` is `"process"`, `"thread"`, or `"off"` (nothing drawn).
 
-If the render process cannot start, liveplot warns and draws inside `log` instead. `plot.mode` tells you which is in use: `"process"`, `"thread"`, or `"off"` when nothing is drawn.
+## Progress bar
 
-## The progress bar
+tqdm's (`tqdm.auto`), under the plot, with the latest metrics as its postfix. Pass your own tqdm bar as the iterable to reuse it. `progress=False` turns it off.
 
-The bar is tqdm's (`tqdm.auto`), shown under the plot. Its postfix shows the latest value of each metric. Pass an existing tqdm bar as the iterable to use yours instead. `progress=False` turns the bar off.
+## Interrupting
 
-## Interrupting a cell
+Safe. Jupyter interrupts every process the kernel started; the render process ignores it. You keep the last frame and `plot.data`. Rerunning the cell starts a new plot.
 
-Interrupting is safe. Jupyter sends the interrupt to every process the kernel started, and the render process ignores it. You are left with the last frame, and `plot.data` holds everything logged so far. Running the cell again starts a new plot.
-
-A plot that is dropped without `finish()` stops its render process when it is garbage collected. The render process also exits on its own if the notebook kernel dies.
+A plot dropped without `finish()` stops its render process when garbage-collected. The render process also exits if the kernel dies.
 
 ## Outside a notebook
 
-In a plain script nothing is drawn, and no message is shown. `plot.data` and `plot.latest` are still filled in, the progress bar still works, and [`plot.figure()`][liveplot.LivePlot.figure] and [recording](saving.md#recording-a-gif) still work.
+Nothing is drawn, silently. `plot.data`, `plot.latest`, the bar, [`plot.figure()`][liveplot.LivePlot.figure] and [recording](saving.md#recording-a-gif) still work.
 
 ## Dependencies
 
-`import liveplot` imports nothing heavy. matplotlib, numpy and pillow are imported when they are first needed. IPython and tqdm are optional: without IPython nothing is displayed, and without tqdm there is no progress bar.
+`import liveplot` imports nothing heavy; matplotlib, numpy and pillow load on first use. IPython and tqdm are optional: without IPython nothing is shown, without tqdm there's no bar.

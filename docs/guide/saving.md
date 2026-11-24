@@ -1,8 +1,8 @@
 # Saving and recording
 
-## A matplotlib figure of the current state
+## A matplotlib figure
 
-[`plot.figure()`][liveplot.LivePlot.figure] returns a matplotlib `Figure` of the plot as it stands: the same panels, curves, reference lines and images.
+[`plot.figure()`][liveplot.LivePlot.figure] returns a matplotlib `Figure` of the current state: panels, curves, reference lines, images.
 
 ```python
 fig = plot.figure()
@@ -12,11 +12,11 @@ fig.savefig("run12.png", dpi=150)
 
 ![a figure exported with plot.figure() and saved as a PNG](../figure_export.png)
 
-The figure is built from `plot.data` when you call it. It is separate from the live display, so changing it does not change the live plot. It works during the run and after it, and also in a script or with `show=False`, where nothing is drawn live.
+Built from `plot.data` on each call and separate from the live display. Works during or after the run, in a script, and with `show=False`.
 
 ## Recording a GIF
 
-`record="run.gif"` keeps every frame that is drawn and writes an animated GIF when the plot finishes:
+`record="run.gif"` keeps every drawn frame and writes a GIF at `finish()`, replaying at the run's pace. Works in scripts too.
 
 ```python
 plot = LivePlot(range(steps), "loss | acc", record="run.gif")
@@ -24,9 +24,7 @@ for step in plot:
     plot.log(loss=train_step())
 ```
 
-The GIF replays at the pace of the run. Recording also works in a plain script, where nothing is displayed.
-
-`record=True` keeps the frames without writing a file. Write one later with [`plot.save_gif`][liveplot.LivePlot.save_gif]:
+`record=True` keeps frames without writing; write later with [`plot.save_gif`][liveplot.LivePlot.save_gif]:
 
 ```python
 plot = LivePlot(range(steps), record=True)
@@ -34,6 +32,6 @@ plot = LivePlot(range(steps), record=True)
 plot.save_gif("run.gif", speedup=2.0)     # twice as fast as the run
 ```
 
-The frames are in `plot.frames` as `(seconds since the plot was created, PNG bytes)` pairs. `plot.last_png` is the most recent frame.
-
-One frame is recorded per redraw, so `refresh_seconds` sets how many frames a recording has.
+- `plot.frames`: `(seconds since creation, PNG bytes)` pairs.
+- `plot.last_png`: the latest frame.
+- One frame per redraw, so `refresh_seconds` sets the frame count.

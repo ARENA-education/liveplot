@@ -50,13 +50,9 @@ The plot is drawn by a separate process and shown as a plain image, so it behave
 
 ## Documentation
 
-The documentation is at **<https://arena-education.github.io/liveplot/>**:
+**<https://arena-education.github.io/liveplot/>**: [common questions](https://arena-education.github.io/liveplot/questions/), a [guide](https://arena-education.github.io/liveplot/guide/) per feature, and the [API reference](https://arena-education.github.io/liveplot/api/). The docs and docstrings were written by Claude (Anthropic's AI model) using Claude Code; please open an issue for anything wrong.
 
-- [Common questions](https://arena-education.github.io/liveplot/questions/): is `total` needed, why wrap the dataloader, two metrics on one axis, a right-hand axis, several panels.
-- [Guide](https://arena-education.github.io/liveplot/guide/): the x-axis, panels, logging at different rates, customising axes, reference lines, images, smoothing, saving and recording.
-- [API reference](https://arena-education.github.io/liveplot/api/): every class and method, generated from the docstrings.
-
-The pages are built from [`docs/`](docs/) and the docstrings in [`liveplot/liveplot.py`](liveplot/liveplot.py). To build them locally:
+Built from [`docs/`](docs/) and the docstrings in [`liveplot/liveplot.py`](liveplot/liveplot.py). Locally:
 
 ```
 pip install -e ".[docs]"
@@ -65,7 +61,8 @@ mkdocs serve
 
 ## Examples
 
-[`examples/demo.py`](https://github.com/ARENA-education/liveplot/blob/main/examples/demo.py) is a cell-by-cell tour of the features. Run it in the VS Code / Cursor interactive window, or [open it in Colab](https://colab.research.google.com/github/ARENA-education/liveplot/blob/demo/examples/demo.ipynb): CI converts it to a notebook on the `demo` branch on every push to `main`. The GIF above is cell 2 of that file, recorded by the library itself in [`examples/make_gif.py`](https://github.com/ARENA-education/liveplot/blob/main/examples/make_gif.py). [`examples/dcgan_synthetic.py`](https://github.com/ARENA-education/liveplot/blob/main/examples/dcgan_synthetic.py) shows loss curves beside generated images.
+- [`examples/demo.py`](https://github.com/ARENA-education/liveplot/blob/main/examples/demo.py): a cell-by-cell tour. Run it in the VS Code / Cursor interactive window or [in Colab](https://colab.research.google.com/github/ARENA-education/liveplot/blob/demo/examples/demo.ipynb) (CI builds the notebook on the `demo` branch). The GIF above is its cell 2, recorded by [`examples/make_gif.py`](https://github.com/ARENA-education/liveplot/blob/main/examples/make_gif.py).
+- [`examples/dcgan_synthetic.py`](https://github.com/ARENA-education/liveplot/blob/main/examples/dcgan_synthetic.py): loss curves beside generated images.
 
 ## Credits
 

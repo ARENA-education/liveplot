@@ -1,10 +1,10 @@
 # Panels and layout strings
 
-The figure is a grid of panels. Each panel holds one or more curves and has one or two y-axes.
+The figure is a grid of panels. A panel holds curves on one or two y-axes.
 
-## No layout: one shared panel
+## No layout
 
-Metrics are created by logging them. With no layout, they all share one panel, with a legend:
+Metrics exist once logged. With no layout, all share one panel with a legend:
 
 ```python
 plot = LivePlot(range(300))
@@ -14,84 +14,57 @@ for step in plot:
 
 ## Layout strings
 
-Pass one string per panel, after the iterable if there is one:
+One string per panel, after the iterable if any:
 
 ```python
 plot = LivePlot(loader, "loss", "return | entropy", "lossD lossG | acc")
 ```
 
-Within a string:
+- Space-separated names share the left y-axis.
+- Names after `|` go on a right-hand y-axis. At most one `|`.
 
-- Names separated by spaces share the left y-axis.
-- Names after a `|` go on a right-hand y-axis. A string can have at most one `|`.
-
-So the example has three panels:
-
-| String | Left axis | Right axis |
+| String | Left | Right |
 |---|---|---|
-| `"loss"` | `loss` | none |
+| `"loss"` | `loss` | — |
 | `"return | entropy"` | `return` | `entropy` |
 | `"lossD lossG | acc"` | `lossD`, `lossG` | `acc` |
 
-Metric names cannot contain spaces or `|` in a layout string.
+Names in a string can't contain spaces or `|`.
 
-### Common cases
-
-Two metrics on one axis:
-
-```python
-plot = LivePlot(loader, "train_loss val_loss")
-```
-
-A metric on the right-hand axis:
-
-```python
-plot = LivePlot(loader, "loss | acc")
-```
-
-Several panels:
-
-```python
-plot = LivePlot(loader, "loss", "acc", "lr")
-```
-
-### Metrics that no string mentions
-
-With a layout, a metric you log that no string mentions gets a new panel of its own, added to the end of the grid:
+A logged metric that no string mentions gets a new panel at the end:
 
 ```python
 plot = LivePlot(loader, "loss")
-...
 plot.log(loss=0.3, lr=1e-3)     # lr gets its own panel
 ```
 
-## What a panel shows by default
+## Defaults
 
-- The title is the metric names joined by " / ".
-- The x label is the plot's `unit`, `"step"` by default.
-- A panel with two y-axes labels each axis with its metric names. A panel with one y-axis has no y label.
-- Every panel has a legend. It lists the curves of both y-axes.
+- Title: the metric names joined by " / ".
+- x label: the plot's `unit` (`"step"`).
+- y labels: only on two-axis panels, the metric names of each side.
+- A legend on every panel, covering both axes.
 
-All of these can be changed. See [Customising axes](axes.md).
+Change any of them with the setters in [Customising axes](axes.md).
 
 ## The grid
 
-Panels fill the grid row by row. By default the grid is at most three columns wide.
+Panels fill row by row, at most 3 columns by default.
 
 | Option | Effect |
 |---|---|
-| `max_cols` | Widest grid. The default is 3. `None` gives a near-square grid. |
+| `max_cols` | Widest grid. Default 3; `None` for near-square. |
 | `rows` | Fix the number of rows. |
 | `cols` | Fix the number of columns. |
-| `cell_size` | `(width, height)` of one panel in inches. The default is `(5, 3.5)`. |
-| `dpi` | Resolution of the image. The default is 100. |
+| `cell_size` | `(width, height)` of one panel, inches. Default `(5, 3.5)`. |
+| `dpi` | Image resolution. Default 100. |
 
 ```python
 plot = LivePlot(loader, "loss", "acc", "lr", "grad_norm", cols=2, cell_size=(4, 3))
 ```
 
-For a fixed grid that you fill panel by panel, as with `plt.subplots`, use [`LivePlot.subplots`][liveplot.LivePlot.subplots]. See [Images with subplots and imshow](images.md).
+For a fixed grid you fill panel by panel, like `plt.subplots`, use [`LivePlot.subplots`][liveplot.LivePlot.subplots]; see [Images](images.md).
 
 ## The dict form
 
-A panel can also be given as a dict in place of a string, for example `{"metrics": ["acc"], "ylim": (0, 1), "ylabel": "test accuracy"}`. This form is older. The setters in [Customising axes](axes.md) do the same job and are the intended way.
+A dict also works in place of a string: `{"metrics": ["acc"], "ylim": (0, 1), "ylabel": "test accuracy"}`. It's the older form; prefer the [setters](axes.md).
