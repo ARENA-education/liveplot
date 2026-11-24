@@ -3,6 +3,7 @@ site_description: Live training curves in Jupyter, Colab and VS Code
 site_url: https://arena-education.github.io/liveplot/
 repo_url: https://github.com/ARENA-education/liveplot
 repo_name: ARENA-education/liveplot
+copyright: These docs were written by Claude (Anthropic's AI model) using Claude Code. Report mistakes as GitHub issues.
 edit_uri: edit/main/docs/
 
 theme:

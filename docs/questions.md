@@ -1,93 +1,57 @@
 # Common questions
 
-## Is `total` needed? What does it change?
+## Is `total` needed?
 
-No. You can leave it out.
+No. `total` is tqdm's: the length of the run. It sets the progress bar's length when the bar can't get one from `len()`, and, with `fixed_x=True`, fixes the x-axis to the whole run. `fixed_x` is off by default, so the figure is the same with or without `total`.
 
-`total` is the number of items in the whole run, with the same meaning as tqdm's `total`. It does two things:
-
-- It sets the length of the progress bar when the bar cannot work it out: the bar that [`plot.update()`][liveplot.LivePlot.update] opens, and the bar for an iterable that has no `len()`. With a length, the bar shows a percentage and a time remaining.
-- With `fixed_x=True`, it fixes the x-axis to the whole run from the first frame.
-
-`fixed_x` is `False` by default. The x-axis then grows with the data, and the figure looks the same with or without `total`.
-
-If you wrap something that has a length, such as `LivePlot(loader)` or `LivePlot(range(n))`, `total` is taken from `len()`. Bars made by `plot(loader)` always use `len(loader)` and ignore `total`.
-
-See [The x-axis and total](guide/x-axis.md#total-and-fixed_x).
+`LivePlot(loader)` takes `total` from `len(loader)`. Bars made by `plot(loader)` always use `len(loader)`. See [The x-axis and total](guide/x-axis.md#total-and-fixed_x).
 
 ## Why wrap the dataloader?
 
-Because wrapping is what moves the x-axis. `LivePlot(loader)` and `plot(loader)` count the items they yield, and that count is the x value of every point you log.
+Wrapping moves x. [`plot.log`][liveplot.LivePlot.log] records values but doesn't advance x, so with nothing advancing it every point lands at `x = 0`: a vertical line, not a curve.
 
-[`plot.log`][liveplot.LivePlot.log] records values. It does not advance x. If nothing advances x, every point is logged at `x = 0` and you get a vertical line instead of a curve:
-
-```python
-plot = LivePlot()
-for batch in loader:
-    plot.log(loss=train_step(batch))   # every point at x = 0
-```
-
-There are three ways to advance x. Use whichever fits your loop.
+Three ways to advance x:
 
 ```python
-# 1. Wrap the loop
-plot = LivePlot("loss")
+# 1. Wrap the loop (also gives a progress bar)
 for batch in plot(loader):
     plot.log(loss=train_step(batch))
-plot.finish()
 
 # 2. Call update() once per step
-plot = LivePlot("loss")
 for batch in loader:
     plot.log(loss=train_step(batch))
     plot.update()
-plot.finish()
 
 # 3. Pass the step yourself
-plot = LivePlot("loss")
 for step, batch in enumerate(loader):
     plot.log(step, loss=train_step(batch))
-plot.finish()
 ```
 
-Wrapping also gives you the progress bar. See [The x-axis and total](guide/x-axis.md).
+Call `plot.finish()` after each. See [The x-axis and total](guide/x-axis.md).
 
-## How do I put two metrics on one axis?
+## Two metrics on one axis?
 
-Put both names in one layout string, separated by a space:
+One string, names separated by a space: `LivePlot(loader, "train_loss val_loss")`. With no strings at all, every metric shares one panel.
+
+## A metric on the right-hand axis?
+
+Put it after `|`: `LivePlot(loader, "loss | acc")`. Then `plot["acc"]` is the right-hand axis. Each side can hold several names: `"lossD lossG | acc"`.
+
+## Several panels?
+
+One string per panel:
 
 ```python
-plot = LivePlot(loader, "train_loss val_loss")
+LivePlot(loader, "loss", "acc", "lr")                  # three panels
+LivePlot(loader, "train_loss val_loss | acc", "lr")    # two, the first with two y-axes
 ```
 
-They share a panel and a y-axis, and the legend tells them apart. With no layout strings at all, every metric you log shares one panel.
-
-## How do I put a metric on the right-hand axis?
-
-Put its name after a `|`:
-
-```python
-plot = LivePlot(loader, "loss | acc")
-plot["acc"].set_ylim(0, 1)     # plot["acc"] is the right-hand axis
-```
-
-`loss` uses the left y-axis and `acc` the right one. Each side can hold several names: `"lossD lossG | acc"`.
-
-## How do I get several panels?
-
-Give one string per panel:
-
-```python
-plot = LivePlot(loader, "loss", "acc", "lr")                  # three panels
-plot = LivePlot(loader, "train_loss val_loss | acc", "lr")    # two panels, the first with two y-axes
-```
-
-A metric you log that no string mentions gets a panel of its own. See [Panels and layout strings](guide/panels.md).
+A metric no string mentions gets its own panel. See [Panels and layout strings](guide/panels.md).
 
 ## Why is nothing drawn?
 
-The live plot only appears in a notebook: Jupyter, Colab, or the VS Code / Cursor interactive window. In a plain script nothing is drawn and no message is shown. The metrics are still collected in `plot.data`, and [`plot.figure()`][liveplot.LivePlot.figure] still returns a figure you can save.
+The plot only shows in a notebook (Jupyter, Colab, VS Code / Cursor interactive window). In a script nothing is drawn, silently. `plot.data` and [`plot.figure()`][liveplot.LivePlot.figure] still work.
 
-## Do I need to call `finish()`?
+## Do I need `finish()`?
 
-Not when you iterate the plot itself (`for batch in plot`) or use `with LivePlot(...) as plot:`. Both finish the plot for you. Call [`plot.finish()`][liveplot.LivePlot.finish] yourself after loops that use `plot(loader)` or `plot.update()`. It draws the last frame, closes the progress bar and stops the render process.
+Not for `for batch in plot` or `with LivePlot(...) as plot:`; both finish for you. After `plot(loader)` or `plot.update()` loops, call [`plot.finish()`][liveplot.LivePlot.finish]: it draws the last frame, closes the bar and stops the render process.

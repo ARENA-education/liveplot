@@ -2,23 +2,19 @@
 
 ## x is a step counter
 
-The plot keeps a counter of items consumed, `plot.n`, like tqdm's `n`. The x value of a logged point is
+`plot.n` counts items consumed, like tqdm's `n`. A point's x is
 
 ```
 x = initial + n * unit_scale
 ```
 
-at the time of the [`log`][liveplot.LivePlot.log] call. With the defaults (`initial=0`, `unit_scale=1`) that is just `n`. The plot never looks at the items themselves.
-
-`n` is 0 inside the loop body for the first item, like `for step in range(N)`. It goes up by one after each item.
-
-`log` does not change `n`. Something else has to.
+when [`log`][liveplot.LivePlot.log] is called. `n` is 0 for the first item and goes up by one after each. The items themselves are never looked at. `log` doesn't change `n`.
 
 ## Three ways to advance x
 
 ### Wrap the loop
 
-A single loop: pass the iterable to the constructor and iterate the plot.
+Single loop: pass the iterable and iterate the plot. One progress bar; the plot finishes when the loop ends.
 
 ```python
 plot = LivePlot(loader, "loss")
@@ -26,9 +22,7 @@ for batch in plot:
     plot.log(loss=train_step(batch))
 ```
 
-This shows one progress bar and finishes the plot when the loop ends.
-
-Nested loops: create the plot once and wrap the inner loop with [`plot(...)`][liveplot.LivePlot.__call__]. The count continues from one epoch to the next. Each wrapped loop gets its own progress bar, and keyword arguments such as `desc` go to tqdm.
+Nested loops: create the plot once, wrap the inner loop with [`plot(...)`][liveplot.LivePlot.__call__]. The count carries across epochs. Each wrapped loop gets its own bar; keyword arguments such as `desc` go to tqdm.
 
 ```python
 plot = LivePlot("loss", "acc")
@@ -39,11 +33,11 @@ for epoch in range(epochs):
 plot.finish()
 ```
 
-If you already have a tqdm bar, pass it as the iterable. It is reused instead of wrapped in a second bar: `LivePlot(tqdm(loader), "loss")`.
+An existing tqdm bar passed as the iterable is reused, not wrapped: `LivePlot(tqdm(loader), "loss")`.
 
 ### Call `update()`
 
-[`plot.update()`][liveplot.LivePlot.update] advances the count by one, like tqdm's `update`. Use it when you do not want to wrap the loop. Call it after logging the step's metrics.
+[`plot.update()`][liveplot.LivePlot.update] adds one to the count, like tqdm's. Call it after logging the step. The first call opens one bar for the whole run.
 
 ```python
 plot = LivePlot("loss", total=epochs * len(loader))
@@ -55,11 +49,7 @@ for epoch in range(epochs):
 plot.finish()
 ```
 
-The first `update()` opens one progress bar for the whole run.
-
 ### Pass the step yourself
-
-Give the x value as the first argument of `log`:
 
 ```python
 with LivePlot("loss") as plot:
@@ -67,83 +57,61 @@ with LivePlot("loss") as plot:
         plot.log(step, loss=train_step())
 ```
 
-Nothing is counted here and no progress bar is shown. The step can be any number, for example examples seen or seconds elapsed.
+No counting, no bar. The step can be any number (examples seen, seconds). Inside a wrapped loop it applies to that call only; otherwise later calls without a step reuse it.
 
-Inside a wrapped loop, an explicit step applies to that one `log` call. Without a wrapped loop, it also becomes the x of later `log` calls that give no step.
+### None of these
 
-### What happens if you do none of these
-
-Every point is logged at `x = initial`, which is 0 by default:
-
-```python
-plot = LivePlot()
-for batch in loader:
-    plot.log(loss=train_step(batch))
-
-plot.data["loss"][0]   # [0, 0, 0, ...]
-```
-
-The figure shows a vertical line.
+Every point lands at `x = initial` (0), and the figure is a vertical line: `plot.data["loss"][0] == [0, 0, 0, ...]`.
 
 ## `total` and `fixed_x`
 
-`total` is the number of items in the whole run. It is optional.
+`total` is the number of items in the run. Optional.
 
 | You write | `total` is |
 |---|---|
-| `LivePlot(range(1000))`, `LivePlot(loader)` | taken from `len()` |
+| `LivePlot(range(1000))`, `LivePlot(loader)` | `len()` |
 | `LivePlot("loss", total=epochs * len(loader))` | what you gave |
 | `LivePlot("loss")` | `None` |
 
-What it changes:
+It sets:
 
-- **The progress bar**, when the bar cannot get a length from what it wraps. That is the bar opened by `plot.update()`, and the bar for an iterable with no `len()`, such as a generator. With a total the bar shows a percentage and a time remaining. Without one it shows a plain count.
-- **The x range**, but only with `fixed_x=True`.
+- **The bar's length**, when the bar can't get one from `len()`: the bar from `plot.update()`, or a generator. Then the bar shows a percentage and ETA. Bars from `plot(loader)` use `len(loader)`, not `total`.
+- **The x range**, only with `fixed_x=True`: `(initial, initial + total * unit_scale)` from the first frame, filled from the left.
 
-Bars made by `plot(loader)` use `len(loader)`. They do not use `total`.
-
-`fixed_x` is `False` by default: the x-axis grows with the data, and `total` does not change the figure. With `fixed_x=True` and a known total, the x-axis is fixed to
-
-```
-(initial, initial + total * unit_scale)
-```
-
-from the first frame, and the curve grows into it from the left.
+`fixed_x` is off by default: the x-axis grows with the data. Without a `total` it does nothing. For one panel, use [`set_xlim`][liveplot.liveplot.Panel.set_xlim].
 
 ```python
-plot = LivePlot(range(1000), "loss", fixed_x=True)                      # x-axis is 0 to 1000 throughout
-plot = LivePlot("loss", total=epochs * len(loader), fixed_x=True)       # the same for nested loops
+plot = LivePlot(range(1000), "loss", fixed_x=True)                  # x is 0 to 1000 throughout
+plot = LivePlot("loss", total=epochs * len(loader), fixed_x=True)   # same, nested loops
 ```
 
-`fixed_x=True` without a total has no effect. To fix the x range of one panel by hand, use [`set_xlim`][liveplot.liveplot.Panel.set_xlim].
+## `initial`, `unit`, `unit_scale`
 
-## `initial`, `unit` and `unit_scale`
+tqdm's arguments, tqdm's meaning:
 
-These are tqdm's arguments with tqdm's meaning.
+- `initial`: x of the first item. `initial=1` for 1-based; `initial=10` plots `range(10, 20)` at its values.
+- `unit`: the name of one item. Default x label and bar unit. Default `"step"`.
+- `unit_scale`: x per item.
 
-- `initial` is the x of the first item. Use `initial=1` for a 1-based axis, or `initial=10` to plot `range(10, 20)` at its own values.
-- `unit` names one item. It is the default x label and the unit on the progress bar. The default is `"step"`.
-- `unit_scale` is how far x moves per item.
-
-To plot against examples seen instead of batches:
+Plot against examples seen:
 
 ```python
 plot = LivePlot(loader, "loss", unit="examples", unit_scale=batch_size)
 ```
 
-The x values are then 0, `batch_size`, `2 * batch_size`, and so on. The progress bar shows the same numbers.
+x is then 0, `batch_size`, `2 * batch_size`, …; the bar shows the same numbers.
 
 ## Reading the current x
 
-[`plot.step`][liveplot.LivePlot.step] is the x that a `log` call would get right now. `plot.n` is the raw item count.
+[`plot.step`][liveplot.LivePlot.step]: the x a `log` call would get now. `plot.n`: the raw count.
 
 ## `si_xticks`
 
-By default the x tick labels are matplotlib's: numbers are written in full up to a million. On a long run counted in examples, such as 300,000, those labels can run into each other. `si_xticks=True` writes them with SI prefixes instead:
+Default tick labels are matplotlib's, written in full up to a million, so long runs get crowded labels. `si_xticks=True` uses SI prefixes:
 
 ```python
 plot = LivePlot("loss", total=epochs * len(loader), unit="examples", unit_scale=batch_size, si_xticks=True)
 # x ticks: 0, 50k, 100k, ... 300k
 ```
 
-The prefix is chosen once per axis, from its largest tick: k, M, G, then T. An axis whose ticks stay below 10,000 is labelled as before. From 10¹⁵ on, the axis uses matplotlib's scientific notation, with the power at the end of the axis. `LivePlot.subplots` takes the same argument.
+One prefix per axis, from its largest tick: k, M, G, T. Axes below 10,000 are unchanged. From 10¹⁵, matplotlib's scientific notation. `LivePlot.subplots` takes it too.

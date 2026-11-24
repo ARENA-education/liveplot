@@ -1,35 +1,35 @@
 # Reference lines
 
-Reference lines mark a level a curve should reach, or a moment in the run. The method names are matplotlib's: `axhline` for a horizontal line and `axvline` for a vertical one.
+matplotlib's names: `axhline` for a level to reach, `axvline` for a moment in the run.
 
 ![horizontal reference lines for uniform loss and unigram entropy, and a vertical line at a learning rate drop](../reference_lines.gif)
 
-## Horizontal lines
+## Horizontal
 
-Call `axhline` on the axis of the metric the line belongs with:
+Call `axhline` on the metric's axis:
 
 ```python
-plot["loss"].axhline(math.log(d_vocab), "uniform")       # the loss of a uniform guess
+plot["loss"].axhline(math.log(d_vocab), "uniform")       # loss of a uniform guess
 plot["return"].axhline(500, "solved", color="green")
 ```
 
-- The line is dashed grey by default. Extra keyword arguments (`color`, `linestyle`, `linewidth`, `alpha`) go to matplotlib.
-- The second argument is the label. It appears in the panel's legend. Without a label, the legend shows the number.
-- On a panel with two y-axes, the line uses the scale of the axis you called it on. `plot["acc"].axhline(0.9)` is drawn against the right-hand axis if `acc` is on the right.
+- Dashed grey by default; extra kwargs (`color`, `linestyle`, `linewidth`, `alpha`) go to matplotlib.
+- The label goes in the legend. Without one, the legend shows the number.
+- Drawn on the scale of the axis you called it on, so `plot["acc"].axhline(0.9)` uses the right axis if `acc` is there.
 
-`plot.axhline(y, label)` on the plot itself draws the line on the left axis of every panel that exists at that moment. Panels created later do not get it. `plot.axhline(y, label, metric="loss")` is the same as `plot["loss"].axhline(y, label)`.
+`plot.axhline(y, label)` draws on the left axis of every panel that exists now (not later ones). `plot.axhline(y, label, metric="loss")` equals `plot["loss"].axhline(y, label)`.
 
-## Vertical lines
+## Vertical
 
 ```python
 plot.axvline(label="lr drop")                   # every panel, at the current step
 plot.panels[1].axvline(2000, "checkpoint")      # one panel, at x = 2000
 ```
 
-- Without an `x`, the line is drawn at the current step, [`plot.step`][liveplot.LivePlot.step], at the time of the call. So you can mark an event at the point in the loop where it happens.
-- The line is dotted grey by default. Extra keyword arguments go to matplotlib.
-- The label is written along the line. It does not appear in the legend.
-- `plot.axvline` draws on every panel that holds curves, including panels created later. Image panels are skipped.
+- No `x`: drawn at [`plot.step`][liveplot.LivePlot.step] at call time, so you can mark an event where it happens.
+- Dotted grey by default; extra kwargs go to matplotlib.
+- The label is written along the line, not in the legend.
+- `plot.axvline` covers every curve panel, including later ones. Image panels are skipped.
 
 ```python
 for step in plot:

@@ -2,20 +2,18 @@
 
 ## What `log` accepts
 
-[`plot.log`][liveplot.LivePlot.log] takes metric values by name:
-
 ```python
 plot.log(loss=0.3, acc=0.9)          # at the current x
 plot.log(step, loss=0.3)             # at an explicit x
-plot.log(step, {"loss": 0.3})        # a dict, useful when names are not valid Python identifiers
+plot.log(step, {"loss": 0.3})        # a dict, for names that aren't identifiers
 plot.log({"loss": 0.3})              # a dict at the current x
 ```
 
-A value is anything `float()` accepts. That includes a one-element tensor. For a tensor that requires grad, PyTorch warns when it is converted, so pass `loss.item()` or `loss.detach()`.
+Values are anything `float()` accepts, including one-element tensors. Pass `loss.item()` or `loss.detach()`: PyTorch warns when converting a tensor that requires grad. See [`plot.log`][liveplot.LivePlot.log].
 
-## Different rates need nothing special
+## Different rates
 
-Every metric keeps its own list of `(x, value)` points. Each `log` call adds a point to the metrics it names, at the current x. So a metric logged every step gets a point per step, and a metric logged every 50 steps gets a point every 50 steps. Both are drawn against the same x-axis.
+Each metric keeps its own `(x, value)` points, and `log` adds one to each metric it names. A metric logged every 50 steps simply has fewer points, on the same x-axis:
 
 ```python
 plot = LivePlot(range(num_steps), "loss | eval_loss eval_acc")
@@ -28,9 +26,11 @@ for step in plot:
 
 ![training loss every step, eval loss and accuracy every 50 steps](../demo.gif)
 
+Sparse curves read better with a dot on each point: `plot["eval_acc"].set_marker("o")`.
+
 ## Once per epoch
 
-Log after the inner loop. The point lands at the x the count has reached, which is the number of batches so far:
+Log after the inner loop. x is the count reached, i.e. batches so far:
 
 ```python
 plot = LivePlot("loss", "acc")
@@ -41,12 +41,12 @@ for epoch in range(epochs):
 plot.finish()
 ```
 
-## Reading the values back
+## Reading values back
 
-- `plot.data` is the full history: `{metric: (xs, values)}`, two lists per metric.
-- `plot.latest` is the most recent value of each metric.
+- `plot.data`: full history, `{metric: (xs, values)}`.
+- `plot.latest`: the last value of each metric.
 
-Both are filled in whether or not anything is drawn, so they also work in a script.
+Both fill whether or not anything is drawn.
 
 ```python
 xs, losses = plot.data["loss"]
@@ -55,4 +55,4 @@ best = min(losses)
 
 ## Collecting without drawing
 
-`LivePlot(..., show=False)` draws nothing. The metrics are still collected and the progress bar still shows the latest values. `progress=False` turns the bar off. The two options are independent.
+`show=False` draws nothing; metrics are still collected and the bar still runs. `progress=False` turns the bar off. The two are independent.

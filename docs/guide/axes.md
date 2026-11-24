@@ -1,21 +1,21 @@
 # Customising axes
 
-Titles, labels, limits and scales are set with matplotlib's method names. You can call the setters before the loop or during it. The figure is laid out again on the next frame.
+Setters use matplotlib's names. Call them before or during the loop; the next frame picks them up.
 
 ![a panel with a title, a fixed right-hand axis and a log-scale panel](../axes_api.gif)
 
 ## Which object to call
 
-| Object | How to get it | What its setters change |
+| Object | Get it with | Changes |
 |---|---|---|
-| An axis | `plot["acc"]` | One y-axis: the one holding that metric, left or right |
-| A panel | `plot.panels[0]`, `plot["acc"].panel` | One panel, and its left y-axis |
-| The plot | `plot` | Every panel, including panels created later |
+| Axis | `plot["acc"]` | The y-axis holding that metric, left or right |
+| Panel | `plot.panels[0]`, `plot["acc"].panel` | One panel, and its left axis |
+| Plot | `plot` | Every panel, including later ones |
 
 ```python
 plot = LivePlot(loader, "loss | acc", "lr")
 
-plot["acc"].set_ylim(0, 1)                   # the right-hand axis of the first panel
+plot["acc"].set_ylim(0, 1)                   # right-hand axis of panel 0
 plot["acc"].set_ylabel("test accuracy")
 plot["lr"].set_yscale("log")
 
@@ -25,38 +25,38 @@ plot.panels[0].set_xlim(0, 10_000)
 plot.set_xlabel("batches")                   # every panel
 ```
 
-`plot[metric]` finds the axis whichever side it is on, so a right-hand axis needs no special spelling. `plot.panels[i].left` and `plot.panels[i].right` name a panel's two axes directly.
+`plot[metric]` finds the axis on either side. `panel.left` / `panel.right` name the two axes directly.
 
 ## The setters
 
-On an axis ([reference](../api.md#liveplot.liveplot._Axis)):
+Axis ([reference](../api.md#liveplot.liveplot._Axis)):
 
 | Setter | Effect |
 |---|---|
-| `set_ylabel(text)` | The y label |
-| `set_ylim(low, high)` | Fix the y range. Also accepts one `(low, high)` pair. Both limits are required. |
+| `set_ylabel(text)` | y label |
+| `set_ylim(low, high)` | Fix the y range; also takes one `(low, high)`. Both required. |
 | `set_yscale("log")` | `"linear"` or `"log"` |
-| `set_marker("o")` | A dot on every point of this axis's curves, e.g. for an eval logged once per epoch. `None` turns it off. |
-| `axhline(y, label)` | A horizontal [reference line](reference-lines.md) |
+| `set_marker("o")` | A dot on every point, e.g. a once-per-epoch eval. `None` turns it off. |
+| `axhline(y, label)` | Horizontal [reference line](reference-lines.md) |
 
-On a panel ([reference][liveplot.liveplot.Panel]):
+Panel ([reference][liveplot.liveplot.Panel]):
 
 | Setter | Effect |
 |---|---|
-| `set_title(text)` | The title |
-| `set_xlabel(text)` | The x label |
+| `set_title(text)` | Title |
+| `set_xlabel(text)` | x label |
 | `set_xlim(low, high)` | Fix the x range |
-| `set_smooth(weight)` | [Smoothing](smoothing.md) for the panel's curves |
-| `legend(**kwargs)` | Move or restyle the legend. The keyword arguments go to matplotlib's `Axes.legend`. |
-| `axvline(x, label)` | A vertical [reference line](reference-lines.md) |
+| `set_smooth(weight)` | [Smoothing](smoothing.md) |
+| `legend(**kwargs)` | Move/restyle the legend; kwargs go to `Axes.legend` |
+| `axvline(x, label)` | Vertical [reference line](reference-lines.md) |
 
-The panel setters are also available on an axis, where they act on the axis's panel. So `plot["acc"].set_title("evaluation")` works. The y setters are also available on a panel, where they act on the left axis.
+Panel setters also work on an axis (acting on its panel): `plot["acc"].set_title("evaluation")`. Axis y setters also work on a panel (acting on its left axis).
 
-On the plot, `set_title`, `set_xlabel`, `set_xlim`, `set_ylabel`, `set_ylim`, `set_yscale` and `set_smooth` apply to every panel. The y setters reach left axes only.
+On the plot, `set_title`, `set_xlabel`, `set_xlim`, `set_ylabel`, `set_ylim`, `set_yscale` and `set_smooth` apply to every panel; the y setters reach left axes only.
 
-## Several settings at once
+## Several at once
 
-`set(**kwargs)` calls several setters in one go, like matplotlib's `Axes.set`. Each keyword `name=value` calls `set_name(value)`:
+`set(**kwargs)`, like `Axes.set`: `name=value` calls `set_name(value)`.
 
 ```python
 plot["acc"].set(ylabel="test accuracy", ylim=(0, 1))
@@ -68,9 +68,9 @@ plot.set(xlabel="examples", smooth=0.9)       # every panel
 
 ```python
 plot.panels[0].legend(loc="upper left")
-plot.panels[0].legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncols=3)   # under the panel
+plot.panels[0].legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncols=3)   # below the panel
 ```
 
-## Limits and scales that liveplot does not support
+## Not supported
 
-`set_ylim` and `set_xlim` need both limits. `set_yscale` accepts `"linear"` and `"log"` only. For anything else, build a matplotlib figure with [`plot.figure()`][liveplot.LivePlot.figure] and change it there.
+One-sided limits, and scales other than `"linear"` / `"log"`. For those, take [`plot.figure()`][liveplot.LivePlot.figure] and change it in matplotlib.
