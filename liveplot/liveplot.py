@@ -1165,7 +1165,8 @@ class LivePlot:
         smooth (float | None): The default smoothing weight for panels.
         mode (str): `"process"` when a separate render process draws the figure, `"thread"` when
             that process could not start or died, and drawing happens inside `log`, `"off"` when nothing
-            is drawn (`show=False`, or not in a notebook, and not recording).
+            is drawn (`show=False`, or not in a notebook, not serving and not recording).
+        serve_url (str | None): The address of the browser view, with `serve` on.
         frames (list[tuple[float, bytes]]): With `record` set, every frame shown so far, as
             `(seconds since the plot was created, PNG bytes)`.
         last_png (bytes | None): The most recent frame, as PNG bytes.
@@ -1186,6 +1187,7 @@ class LivePlot:
         cell_size: tuple = (5, 3.5),
         dpi: int = 100,
         show: bool = True,
+        serve: bool | int | str | None = None,
         progress: bool = True,
         desc: str | None = None,
         record: bool | str = False,
@@ -1230,6 +1232,14 @@ class LivePlot:
             dpi: Resolution of the rendered image.
             show: `False` draws nothing. Metrics are still collected in `data` and shown on the
                 progress bar.
+            serve: Also show the plot in a web browser, for scripts run from a terminal, where
+                nothing is drawn otherwise. `True` serves it at http://localhost:8765/ (or the
+                next free port) and prints the link; an int picks the port; `"0.0.0.0:8765"`
+                listens on every interface (anyone who can reach the machine can see the plot).
+                Every plot in one process shares the server and the page shows the newest one.
+                `None` (the default) reads the environment variable `LIVEPLOT_SERVE` (`1`, a port
+                or `host:port`), so a script can be served without editing it:
+                `LIVEPLOT_SERVE=1 python train.py`. The progress bars stay in the terminal.
             progress: `False` shows no progress bar.
             desc: Text before the progress bar, for the bar made by iterating the plot or by
                 `update()`. Bars made by `plot(iterable, desc=...)` take their own.
@@ -1284,7 +1294,8 @@ class LivePlot:
         self._last_draw = self._last_postfix = 0.0
         self._n_logs = 0
         self._handle = self._make_display_handle() if show else None
-        if self._handle is None and not self._record:
+        self.serve_url = self._start_server(serve) if show else None
+        if self._handle is None and self.serve_url is None and not self._record:
             self.mode = "off"  # show=False, or not in a notebook: nothing to draw on, just collect metrics
             return
         try:
@@ -1311,6 +1322,17 @@ class LivePlot:
         if get_ipython() is None:
             return None
         return display(HTML("<i>live plot: waiting for the first frame…</i>"), display_id=True)
+
+    @staticmethod
+    def _start_server(serve):
+        from . import _serve
+
+        try:
+            where = _serve.parse(serve)
+            return None if where is None else _serve.start(*where)
+        except Exception as e:  # noqa: BLE001 - a port in use must not stop a training run
+            warnings.warn(f"LivePlot: could not serve the plot ({type(e).__name__}: {e}); not serving it.", stacklevel=3)
+            return None
 
     def _with_defaults(self, panel):
         if panel["smooth"] is None:
@@ -1965,6 +1987,10 @@ class LivePlot:
                 self._own_bar.close()
             if self._record_path and self.frames:
                 self.save_gif(self._record_path)
+            if self.serve_url is not None:
+                from . import _serve
+
+                _serve.mark_done()
 
     def save_gif(self, path, speedup: float = 1.0, max_frame_ms: int = 1000, hold_last_ms: int = 1500, colors: int = 256):
         """Write the recorded frames as an animated GIF.
@@ -2058,3 +2084,7 @@ class LivePlot:
             from IPython.display import Image
 
             self._handle.update(Image(data=png, format="png"))
+        if self.serve_url is not None:
+            from . import _serve
+
+            _serve.publish(png)

@@ -22,7 +22,27 @@ A plot dropped without `finish()` stops its render process when garbage-collecte
 
 ## Outside a notebook
 
-Nothing is drawn, silently. `plot.data`, `plot.latest`, the bar, [`plot.figure()`][liveplot.LivePlot.figure] and [recording](saving.md#recording-a-gif) still work.
+Nothing is drawn, silently, unless you serve it. `plot.data`, `plot.latest`, the bar, [`plot.figure()`][liveplot.LivePlot.figure] and [recording](saving.md#recording-a-gif) still work.
+
+### In a browser: `serve`
+
+`serve=True` draws the plot anyway and serves it as a web page. The link is printed when the plot is created; the tqdm bars stay in the terminal as usual.
+
+```
+$ python train.py
+liveplot: live plot at http://localhost:8765/
+epoch 0: 100%|██████████| 200/200 [00:04<00:00, 48.9step/s, loss=0.278, acc=0.528]
+```
+
+To serve a script without editing it, set `LIVEPLOT_SERVE`: `LIVEPLOT_SERVE=1 python train.py`. It is read only when `serve` isn't given.
+
+| `serve=` / `LIVEPLOT_SERVE=` | |
+|---|---|
+| `True` / `1` | `localhost`, port 8765 or the next free one |
+| `9000` | that port |
+| `"0.0.0.0:9000"` | every interface: anyone who can reach the machine can see the plot |
+
+Every plot in one process shares the server, and the page shows the newest one, so a script that trains several runs keeps one link. The server stops when the script exits; the page keeps the last frame. On a remote machine, VS Code and Cursor forward the port for you; otherwise `ssh -L 8765:localhost:8765 host`. `show=False` turns serving off too.
 
 ## Dependencies
 
